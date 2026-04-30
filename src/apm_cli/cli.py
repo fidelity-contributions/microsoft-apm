@@ -33,6 +33,8 @@ from apm_cli.commands.policy import policy
 from apm_cli.commands.prune import prune
 from apm_cli.commands.run import preview, run
 from apm_cli.commands.runtime import runtime
+from apm_cli.commands.source import add as add_cmd
+from apm_cli.commands.source import remove as remove_cmd
 from apm_cli.commands.uninstall import uninstall
 from apm_cli.commands.update import update
 from apm_cli.commands.view import view as view_cmd
@@ -76,6 +78,8 @@ cli.add_command(unpack_cmd, name="unpack")
 cli.add_command(init)
 cli.add_command(install)
 cli.add_command(uninstall)
+cli.add_command(add_cmd)
+cli.add_command(remove_cmd)
 cli.add_command(prune)
 cli.add_command(update)
 cli.add_command(compile_cmd, name="compile")

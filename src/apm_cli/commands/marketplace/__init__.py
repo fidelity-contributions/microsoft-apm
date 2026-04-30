@@ -49,7 +49,7 @@ from ...marketplace.semver import SemVer, parse_semver, satisfies_range
 from ...marketplace.yml_schema import load_marketplace_yml
 from ...utils.console import _rich_info, _rich_warning  # noqa: F401
 from ...utils.path_security import PathTraversalError, validate_path_segments
-from .._helpers import _get_console, _is_interactive
+from .._helpers import _get_console
 
 # Restore builtins shadowed by subcommand names
 list = builtins.list
@@ -238,169 +238,29 @@ def _check_gitignore_for_marketplace_json(logger):
             return
 
 
-@marketplace.command(help="Register a marketplace")
+@marketplace.command(help="Register a marketplace (alias: apm add)")
 @click.argument("repo", required=True)
 @click.option("--name", "-n", default=None, help="Display name (defaults to repo name)")
 @click.option("--branch", "-b", default="main", show_default=True, help="Branch to use")
 @click.option("--host", default=None, help="Git host FQDN (default: github.com)")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
 def add(repo, name, branch, host, verbose):
-    """Register a marketplace from OWNER/REPO or HOST/OWNER/REPO."""
-    logger = CommandLogger("marketplace-add", verbose=verbose)
-    try:
-        from ...marketplace.client import _auto_detect_path, fetch_marketplace
-        from ...marketplace.models import MarketplaceSource
-        from ...marketplace.registry import add_marketplace
+    """Register a marketplace from OWNER/REPO or HOST/OWNER/REPO.
 
-        # Parse OWNER/REPO or HOST/OWNER/REPO
-        if "/" not in repo:
-            logger.error(
-                f"Invalid format: '{repo}'. Use 'OWNER/REPO' (e.g., 'acme-org/plugin-marketplace')"
-            )
-            sys.exit(1)
+    Alias: ``apm add OWNER/REPO``.
+    """
+    from ._source_ops import do_add_sources
 
-        from ...utils.github_host import default_host, is_valid_fqdn
-
-        parts = repo.split("/")
-        if len(parts) == 3 and parts[0] and parts[1] and parts[2]:
-            if not is_valid_fqdn(parts[0]):
-                logger.error(
-                    f"Invalid host: '{parts[0]}'. Use 'OWNER/REPO' or 'HOST/OWNER/REPO' format."
-                )
-                sys.exit(1)
-            if host and host != parts[0]:
-                logger.error(f"Conflicting host: --host '{host}' vs '{parts[0]}' in argument.")
-                sys.exit(1)
-            host = parts[0]
-            owner, repo_name = parts[1], parts[2]
-        elif len(parts) == 2 and parts[0] and parts[1]:
-            owner, repo_name = parts[0], parts[1]
-        else:
-            logger.error(f"Invalid format: '{repo}'. Expected 'OWNER/REPO'")
-            sys.exit(1)
-
-        if host is not None:
-            normalized_host = host.strip().lower()
-            if not is_valid_fqdn(normalized_host):
-                logger.error(
-                    f"Invalid host: '{host}'. Expected a valid host FQDN "
-                    f"(for example, 'github.com')."
-                )
-                sys.exit(1)
-            resolved_host = normalized_host
-        else:
-            resolved_host = default_host()
-
-        # Hard-fail if the user-supplied --name flag is malformed; the
-        # manifest's name is validated softly below (publisher mistakes
-        # shouldn't break a successful add).
-        if name is not None and not _is_valid_alias(name):
-            logger.error(
-                f"Invalid marketplace name: '{name}'. "
-                f"Names must only contain letters, digits, '.', '_', and '-' "
-                f"(required for 'apm install plugin@marketplace' syntax)."
-            )
-            sys.exit(1)
-
-        # Probe for the marketplace.json location. The probe source's name
-        # is a placeholder -- _auto_detect_path only consults host/owner/repo.
-        probe_source = MarketplaceSource(
-            name=name or repo_name,
-            owner=owner,
-            repo=repo_name,
-            branch=branch,
-            host=resolved_host,
-        )
-        detected_path = _auto_detect_path(probe_source)
-
-        if detected_path is None:
-            logger.error(
-                f"No marketplace.json found in '{owner}/{repo_name}'. "
-                f"Checked: marketplace.json, .github/plugin/marketplace.json, "
-                f".claude-plugin/marketplace.json"
-            )
-            sys.exit(1)
-
-        # Fetch and validate the manifest before logging start, so that the
-        # success/start lines display the *final* alias the user must use.
-        fetch_source = MarketplaceSource(
-            name=name or repo_name,
-            owner=owner,
-            repo=repo_name,
-            branch=branch,
-            host=resolved_host,
-            path=detected_path,
-        )
-        manifest = fetch_marketplace(fetch_source, force_refresh=True)
-        plugin_count = len(manifest.plugins)
-
-        # Resolve final alias: --name flag > manifest.name (if valid) > repo name.
-        # Track which tier won so we can report it in verbose mode and emit a
-        # warning when a publisher-declared name had to be rejected.
-        manifest_name = (manifest.name or "").strip()
-        if name is not None:
-            display_name = name
-            alias_source = "--name flag"
-        elif manifest_name and _is_valid_alias(manifest_name):
-            display_name = manifest_name
-            alias_source = f"manifest.name ('{manifest_name}')"
-        else:
-            display_name = repo_name
-            if manifest_name and not _is_valid_alias(manifest_name):
-                logger.warning(
-                    f"Manifest declares name '{manifest_name}' which is not a "
-                    f"valid alias (must match [a-zA-Z0-9._-]+). "
-                    f"Falling back to repo name."
-                )
-                alias_source = f"repo name (manifest.name '{manifest_name}' invalid)"
-            else:
-                alias_source = "repo name (manifest.name missing)"
-
-        # Defense-in-depth: repo names from GitHub already satisfy the alias
-        # regex, so this invariant should always hold by the time we register.
-        assert _is_valid_alias(display_name), (  # noqa: S101
-            f"Resolved marketplace alias '{display_name}' failed validation"
-        )
-
-        logger.start(f"Registering marketplace '{display_name}'...", symbol="gear")
-        logger.verbose_detail(f"    Repository: {owner}/{repo_name}")
-        logger.verbose_detail(f"    Branch: {branch}")
-        if resolved_host != "github.com":
-            logger.verbose_detail(f"    Host: {resolved_host}")
-        logger.verbose_detail(f"    Detected path: {detected_path}")
-        logger.verbose_detail(f"    Alias source: {alias_source}")
-
-        # Persist with the final alias.
-        source = MarketplaceSource(
-            name=display_name,
-            owner=owner,
-            repo=repo_name,
-            branch=branch,
-            host=resolved_host,
-            path=detected_path,
-        )
-        add_marketplace(source)
-
-        logger.success(
-            f"Marketplace '{display_name}' registered ({plugin_count} plugins)",
-            symbol="check",
-        )
-        if manifest.description:
-            logger.verbose_detail(f"    {manifest.description}")
-
-        # Surface the install syntax only when the alias is something the user
-        # could not have predicted from OWNER/REPO. Silence is fine otherwise.
-        if name is None and display_name != repo_name:
-            logger.progress(
-                f"Install plugins with: apm install <plugin>@{display_name}",
-                symbol="info",
-            )
-
-    except Exception as e:
-        logger.error(f"Failed to register marketplace: {e}")
-        if verbose:
-            logger.progress(traceback.format_exc(), symbol="info")
-        sys.exit(1)
+    rc = do_add_sources(
+        repos=(repo,),
+        name=name,
+        branch=branch,
+        host=host,
+        verbose=verbose,
+        invoked_as_legacy=True,
+    )
+    if rc != 0:
+        sys.exit(rc)
 
 
 @marketplace.command(name="list", help="List registered marketplaces")
@@ -565,44 +425,25 @@ def update(name, verbose):
         sys.exit(1)
 
 
-@marketplace.command(help="Remove a registered marketplace")
+@marketplace.command(help="Remove a registered marketplace (alias: apm remove)")
 @click.argument("name", required=True)
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
 def remove(name, yes, verbose):
-    """Unregister a marketplace."""
-    logger = CommandLogger("marketplace-remove", verbose=verbose)
-    try:
-        from ...marketplace.client import clear_marketplace_cache
-        from ...marketplace.registry import get_marketplace_by_name, remove_marketplace
+    """Unregister a marketplace.
 
-        # Verify it exists first
-        source = get_marketplace_by_name(name)
+    Alias: ``apm remove NAME``.
+    """
+    from ._source_ops import do_remove_source
 
-        if not yes:
-            if not _is_interactive():
-                logger.error(
-                    "Use --yes to skip confirmation in non-interactive mode",
-                    symbol="error",
-                )
-                sys.exit(1)
-            confirmed = click.confirm(
-                f"Remove marketplace '{source.name}' ({source.owner}/{source.repo})?",
-                default=False,
-            )
-            if not confirmed:
-                logger.progress("Cancelled", symbol="info")
-                return
-
-        remove_marketplace(name)
-        clear_marketplace_cache(name, host=source.host)
-        logger.success(f"Marketplace '{name}' removed", symbol="check")
-
-    except Exception as e:
-        logger.error(f"Failed to remove marketplace: {e}")
-        if verbose:
-            logger.progress(traceback.format_exc(), symbol="info")
-        sys.exit(1)
+    rc = do_remove_source(
+        name=name,
+        yes=yes,
+        verbose=verbose,
+        invoked_as_legacy=True,
+    )
+    if rc != 0:
+        sys.exit(rc)
 
 
 def _render_build_error(logger, exc):
