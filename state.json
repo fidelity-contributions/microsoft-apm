@@ -1,10 +1,10 @@
 {
-  "last_updated": "2026-04-30T03:36:52Z",
-  "last_run_tasks": ["task4", "task3", "task7"],
+  "last_updated": "2026-05-01T03:36:59Z",
+  "last_run_tasks": ["task4", "task7"],
   "validated_commands": {
     "test": "python3 -m uv run pytest tests/unit tests/test_console.py -q --ignore=tests/unit/test_audit_report.py",
     "test_full": "python3 -m uv run pytest tests/unit tests/test_console.py -q",
-    "format": "python3 -m uv run black . && python3 -m uv run isort .",
+    "format": "uv run --extra dev ruff check src/ tests/ --fix && uv run --extra dev ruff format src/ tests/",
     "install_dev": "pip install uv --break-system-packages && python3 -m uv sync --extra dev",
     "notes": "uv is not on PATH in CI; use 'python3 -m uv'. Do NOT use --cov: PyYAML global state corruption. Rich outputs ANSI codes even with NO_COLOR=1; strip with regex. Pre-existing failures: test_audit_report.py (SyntaxError f-string py3.12 backslash), test_deps_update_command.py (Group.cli AttributeError) - ~21 failures total, not caused by our changes."
   },
@@ -16,9 +16,9 @@
     "pre_existing_failures": 21,
     "notes": "6708 passing (pre-existing) + 21 new tests from uninstall-engine PR. Pre-existing failures are test_audit_report.py and test_deps_update_command.py."
   },
-  "monthly_activity_issue": "open-2026-04",
+  "monthly_activity_issue": "open-2026-05",
   "monthly_activity_issue_number": null,
-  "monthly_activity_issue_note": "Created new issue '[Test Improver] Monthly Activity 2026-04' in run 2026-04-30. Number unknown (created via safeoutputs).",
+  "monthly_activity_issue_note": "Created new issue '[Test Improver] Monthly Activity 2026-05' in run 2026-05-01. Number unknown (created via safeoutputs). Closed old 2026-04 issue #1060.",
   "ansi_note": "Rich outputs ANSI codes (italic, bold) even with NO_COLOR=1. Use regex r'\\x1b\\[[0-9;]*[A-Za-z]' to strip before text assertions. Fixed in test_policy_status.py (PR #1029).",
   "lockfile_format_note": "Lockfile is apm.lock.yaml (LOCKFILE_NAME constant).",
   "testing_backlog": [
@@ -29,6 +29,11 @@
   ],
   "backlog_cursor": "view-command",
   "completed_work": [
+    {
+      "run": "2026-05-01T03:36:59Z",
+      "tasks": ["task4", "task7"],
+      "description": "Task4: PR #1059 CI all green. PR #1029 CI passing. No fixes needed. Task7: Closed 2026-04 issue #1060. Created new 2026-05 monthly issue."
+    },
     {
       "run": "2026-04-30T03:36:52Z",
       "tasks": ["task4", "task3", "task7"],
