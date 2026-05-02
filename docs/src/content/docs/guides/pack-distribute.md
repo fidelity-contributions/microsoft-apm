@@ -26,10 +26,10 @@ Common motivations:
 The pack/distribute workflow fits between install and consumption:
 
 ```
-apm install  ->  apm pack  ->  upload artifact  ->  download  ->  apm unpack (or tar xzf)
+apm install  ->  apm pack  ->  upload artifact  ->  download  ->  apm install <bundle>
 ```
 
-The left side (install, pack) runs where APM is available. The right side (download, unpack) runs anywhere — a CI job, a dev container, a colleague's laptop. The bundle is the boundary.
+The left side (install, pack) runs where APM is available. The right side (download, install) runs anywhere — a CI job, a dev container, a colleague's laptop. The bundle is the boundary.
 
 ## `apm pack`
 
@@ -126,7 +126,7 @@ This is informational -- the files still extract. The warning helps users unders
 |---|---|---|
 | Output layout | Claude Code plugin directory with `plugin.json` at the root and convention dirs (`agents/`, `skills/`, `commands/`, `instructions/`, `hooks/`) | Mirrors `apm install` deploy paths (`.github/`, `.claude/`, `.cursor/`, `.opencode/`) plus an enriched `apm.lock.yaml` |
 | `plugin.json` | Synthesized (or updated from existing) and validates against the [official Claude Code plugin manifest schema](https://json.schemastore.org/claude-code-plugin.json) | Not emitted |
-| `apm.lock.yaml` inside output | Not emitted (no APM-specific files) | Enriched copy with a `pack:` metadata section |
+| `apm.lock.yaml` inside output | Embedded at bundle root with a `pack.bundle_files` sha256 manifest (SBOM). Consumed by `apm install <bundle>` for integrity verification. | Enriched copy with a `pack:` metadata section |
 | Drop-in for | Any Claude Code plugin consumer (Copilot CLI, Claude Code, Cursor, ...) | `microsoft/apm-action`'s restore mode and bundle-aware tooling |
 | `devDependencies` | Excluded | Included (full install layout) |
 
@@ -278,11 +278,35 @@ dependencies:
       - .github/agents/architect.md
 ```
 
-The `pack:` section records the bundle `format`, the effective `target` filter, and a `packed_at` UTC timestamp. Plugin-format output has no `apm.lock.yaml` -- consumers verify by re-running the upstream pack instead.
+The `pack:` section records the bundle `format`, the effective `target` filter, and a `packed_at` UTC timestamp. Plugin-format output includes an `apm.lock.yaml` with a `pack.bundle_files` sha256 manifest at the bundle root — this is the SBOM that `apm install <bundle>` uses for integrity verification.
 
-## `apm unpack`
+## `apm install <bundle>` (restore)
 
-Extracts an APM bundle (produced with `--format apm`) into a project directory. Accepts both `.tar.gz` archives and unpacked bundle directories. Plugin-format output is consumed directly by Claude Code and other plugin hosts and does not need `apm unpack`.
+Restores a packed plugin bundle (directory or `.tar.gz`) produced by `apm pack`. This is the single restore primitive — matching the `pip install ./wheel` / `cargo install --path` mental model.
+
+```bash
+# Install from a bundle directory
+apm install ./build/my-plugin-1.0.0/
+
+# Install from a .tar.gz archive
+apm install ./build/my-plugin-1.0.0.tar.gz
+
+# Override the log/display label
+apm install ./build/my-plugin-1.0.0.tar.gz --as my-plugin
+
+# Preview without writing
+apm install ./build/my-plugin-1.0.0.tar.gz --dry-run
+```
+
+`apm install <bundle>` verifies the sha256 manifest embedded in the bundle's `apm.lock.yaml` before writing any files. Path-traversal entries are rejected at the install boundary. Installed paths are recorded in the project lockfile under `local_deployed_files` — `apm.yml` is never mutated.
+
+> **Air-gapped installs**: local bundle installs do zero network I/O. The bundle is self-contained and self-describing.
+
+## `apm unpack` (deprecated)
+
+Extracts an APM bundle (produced with `--format apm`) into a project directory. Accepts both `.tar.gz` archives and unpacked bundle directories. Plugin-format output should be restored with `apm install <bundle>`, not `apm unpack`.
+
+> **Deprecated**: `apm unpack` is deprecated as of v0.12. Use `apm install <bundle>` instead — it is the unified restore primitive for both plugin-format and APM-format bundles. `apm unpack` will be removed in v0.13.
 
 ```bash
 # Extract and verify

@@ -130,6 +130,7 @@ See [Dependencies: Transport selection](../../guides/dependencies/#transport-sel
 **Behavior:**
 - `apm install` (no args): Installs **all** packages from `apm.yml` and deploys the project's own `.apm/` content
 - `apm install <package>`: Installs **only** the specified package (adds to `apm.yml` if not present)
+- `apm install <local-bundle>`: Restores a packed plugin bundle (directory or `.tar.gz`) produced by `apm pack`. Verifies the sha256 manifest embedded in the bundle's `apm.lock.yaml`, then deploys files to the target directory. Does not mutate `apm.yml`. Records deployed paths under `local_deployed_files` in the project lockfile. Rejected flags: `--resolver`, `--registry`, `--mcp`, `--policy`/`--no-policy`, `--skill`, `--dev`, `--update`, `--trust-transitive-mcp`, `--allow-insecure`. See [Pack & Distribute](../../guides/pack-distribute/#apm-install-bundle-restore) for the full workflow.
 - Each `http://` dependency is warned at install time before any fetch begins
 - Transitive `http://` dependencies are allowed automatically when they use the same host as a direct insecure dependency you approved with `--allow-insecure`; other transitive hosts require `--allow-insecure-host HOSTNAME`
 
