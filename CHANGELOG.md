@@ -5,12 +5,224 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
 ## [Unreleased]
 
 ### Added
 
-- New `enterprise/governance-guide.md` documentation page: flagship governance reference for CISO / VPE / Platform Tech Lead audiences, covering enforcement points, bypass contract, failure semantics, air-gapped operation, rollout playbook, and known gaps. Trims duplicated content in `governance.md`, `apm-policy.md`, and `integrations/github-rulesets.md`. Adds `templates/apm-policy-starter.yml`. (#851)
+- **`--target agent-skills` deploys skills to `.agents/skills/` (cross-client shared directory).** The new target writes `SKILL.md` files to the [agentskills.io](https://agentskills.io) standard location without tying them to a single client. Excluded from `--target all` (explicit opt-in only); combine with `--target all,agent-skills` for both. Deduplicates with Codex when both targets resolve to the same path. User-scope (`-g`) deploys to `~/.agents/skills/`. (closes #737)
+- **Claude Code as MCP install target.** `apm install --runtime claude` (and auto-detection when `.claude/` exists or the `claude` binary is on PATH) writes MCP server entries to project-scope `.mcp.json` and user-scope `~/.claude.json` per the [Claude Code MCP schema](https://code.claude.com/docs/en/mcp). Project writes are opt-in (gated on the presence of `.claude/`, mirroring Cursor/OpenCode) and user writes are atomic with `0o600` permissions on first creation so concurrent Claude Code sessions cannot truncate the shared config or leak embedded OAuth state. Stdio entries are emitted with explicit `type: "stdio"` so `claude mcp list` renders them identically to entries installed via `claude mcp add --transport stdio`. Schema fidelity is regression-locked by golden fixtures captured live from the upstream `claude` CLI (see `tests/integration/test_claude_mcp_schema_fidelity.py`). Stale-cleanup defaults conservatively when the install scope is unspecified -- only the project file is touched without an explicit `-g/--global` opt-in. Note: Claude Code's third LOCAL scope (per-project private under `~/.claude.json -> projects.<path>.mcpServers`) is intentionally not implemented, since APM packages target reproducible team installs (PROJECT/USER), not per-user-per-project private state. (#1104, closes #643) -- by @dmartinol
+- **`apm install <local-bundle-path>` deploys a previously packed bundle (directory or `.tar.gz`) air-gapped, with sha256 integrity verification against the bundle's embedded `apm.lock.yaml`.** Honours `--target`, `--global`, `--force`, `--dry-run`, plus a new `--as ALIAS` log/display label flag. Local installs record written paths in the project lockfile (`local_deployed_files` / `local_deployed_file_hashes`) and never mutate `apm.yml`. `apm unpack` is now `[Deprecated]` and points at this entrypoint. (#1098)
+- **`apm pack` now embeds `apm.lock.yaml` inside the bundle** with two new `pack:` fields (`target`, `bundle_files`: a `path -> sha256` manifest) so installs can verify integrity and detect target mismatches before writing any file. (#1098)
+- **`apm compile -t copilot` now emits `.github/copilot-instructions.md` with zero user configuration** -- APM's first Copilot-native compile target. Global instructions in `.apm/instructions/` are assembled into the file VS Code and GitHub Copilot read automatically; switching targets cleans it up. APM dogfoods this target. (#1048)
+- **`apm marketplace add` accepts full HTTPS URLs and nested HOST/group/sub/.../REPO shorthands.** You can now paste a repository URL straight from the browser (e.g., `apm marketplace add https://github.com/acme/plugin-marketplace`) and register marketplaces hosted under nested sub-paths on GitHub Enterprise (`ghes.corp.example.com/org/team/repo`). Path-traversal sequences in the parsed segments are rejected via `validate_path_segments`. Non-GitHub hosts (GitLab, Bitbucket, etc.) are explicitly rejected at registration time with an actionable error -- this avoids forwarding GitHub credentials to unintended hosts and the silent fetch-time 404 that previously resulted; native non-GitHub support is tracked separately. (#1034, closes #1027)
+- Regression tests for `apm compile` placement of narrow `applyTo` patterns: instructions whose matches all live deep inside one subtree are now pinned to the deepest covering directory instead of being hoisted to the project root, across both selective and single-point placement strategies. Also covers the file-walk cache that skips repeated filesystem scans for the same glob. (#871)
+- **`apm pack` marketplace builder hardening.** Local source paths are now emitted relative to `metadata.pluginRoot` (fixes double-prefix bug). New pass-through fields: `author`, `license`, `repository`, `keywords` (alias for `tags`). Curator-wins override semantics for `description`/`version` on remote entries. Security guards reject path traversal and absolute paths post-subtraction. (#1061)
+- **Plugin manifest schema-conformance tests.** `tests/unit/test_plugin_exporter_schema.py` validates every shape of `plugin.json` produced by `apm pack` (synthesized, authored, and authored-with-stale-keys) against the vendored official schema. Companion marketplace conformance lives in `tests/unit/marketplace/test_schema_conformance.py`. (#1061)
+- Slash commands installed from APM packages now surface argument hints in Claude Code -- `apm install` automatically maps prompt `input:` to Claude's `arguments:` front-matter, rewrites `${input:name}` references to `$name`, and auto-generates `argument-hint`. Argument names are validated against an allowlist to prevent YAML injection from third-party packages, and the mapping is reported at install time. (#1039)
+
+### Changed
+
+- **Skills for Copilot, Cursor, OpenCode, and Codex now deploy to `.agents/skills/` by default (skill routing convergence).** The four clients whose documentation lists `.agents/` as a skill discovery path now share a single deployment directory, eliminating up to 4 redundant copies per skill when `--target all` is used. Claude retains its native per-client routing (`.claude/skills/`); Gemini joins the convergence in the entry below. Pass `--legacy-skill-paths` (or set `APM_LEGACY_SKILL_PATHS=1`) to restore the previous per-client layout. (closes #1103)
+- **Gemini CLI joins the `.agents/skills/` convergence by default.** Gemini CLI docs list `.agents/skills/` as the preferred alias over `.gemini/skills/`, so Gemini now shares the converged deployment directory with Copilot, Cursor, OpenCode, and Codex (5 clients total). Claude remains on its native `.claude/skills/` routing. (#737)
+- **Auto-migration**: `apm install` now migrates legacy per-client skill deployments (`.github/skills/`, `.cursor/skills/`, `.opencode/skills/`, `.gemini/skills/`) recorded in `apm.lock.yaml` to `.agents/skills/`. Foreign / hand-authored skills outside the lockfile are left untouched. Use `--legacy-skill-paths` to opt out. (#737)
+- **Renamed `NOTICE.md` -> `NOTICE`** to follow the Apache / CNCF convention used by upstream third-party-attribution files (e.g. `kubernetes-sigs/kro`, `kubernetes-sigs/headlamp`). The generator (`scripts/generate-notice.py`), `make notice` target, and `NOTICE Drift Check` workflow now operate on the extension-less path. (#1073)
+- **NOTICE: added "Submitted on behalf of a third-party" section** crediting five contributors whose pull requests landed before the `microsoft-github-policy-service` CLA bot recorded a signature on file -- in keeping with the section-7 wording adopted by CNCF NOTICE files. Driven by a new `_third_party_submissions` block in `scripts/notice-metadata.yaml`. (#1073)
+- **BREAKING: `apm pack` now produces a Claude Code plugin directory by default — zero extra flags, schema-validated `plugin.json`, convention dirs auto-discovered.** The legacy APM bundle layout is preserved under `--format apm`. Migration: CI workflows and scripts that consume the legacy bundle must add `--format apm` (the [`microsoft/apm-action`](https://github.com/microsoft/apm-action) wrapper has been updated accordingly). (#1061)
+- **Plugin manifest schema conformance.** The synthesized/written `plugin.json` no longer emits `agents`/`skills`/`commands`/`instructions` keys pointing at the convention directories — these are auto-discovered by Claude Code, and per the [official schema](https://json.schemastore.org/claude-code-plugin.json) those array entries must be `./*.md` paths to *additional* files. The convention dirs themselves are still copied to disk. When stripping such keys from an authored `plugin.json`, `apm pack` now emits a warning so authors can clean up their source. (#1061)
+
+### Deprecated
+
+- **`--target agents` is deprecated** -- it maps to `copilot` (`.github/`), not `.agents/`. Use `--target copilot` or `--target agent-skills`. Removal in v1.0. (closes #627, #640, #664)
+
+### Removed
+
+- **BREAKING: dropped support for `.collection.yml` / `.collection.yaml` virtual packages.** Dependencies whose paths end in `.collection.yml` or `.collection.yaml` now raise a `ValueError` at parse time with a migration message. Convert any such entry to a regular `apm.yml` with a `dependencies:` section under the same subdirectory, then reference the directory itself as a subdirectory virtual package (no extension). The internal `VirtualPackageType.COLLECTION` enum value, the `download_collection_package` codepath, the `is_virtual_collection()` reference helper, and the `META_PACKAGE` package-type label have been removed -- none were persisted to the lockfile, so existing locks are unaffected. (#1097, closes #1094) Thanks @edenfunf for the original PR.
+
+### Fixed
+
+- `apm compile` no longer silently drops instructions without an `applyTo` pattern from generated `AGENTS.md` and `CLAUDE.md`; globals now render under a `## Global Instructions` section, matching the optimizer's existing `(global)` placement (#1088, closes #1072)
+- `apm install` no longer masks local-bundle install failures with `UnboundLocalError`. (#PR_NUMBER)
+- **`apm install <pkg>@<marketplace>` no longer fails for all marketplace packages.** The install resolver now accepts both legacy and current marketplace key names: `repository`/`repo` for github sources, `url`/`repo` for git-subdir sources, and `type`/`source` as the source-type discriminator. A scheme guard rejects full URLs passed through the `url` fallback. (#1106, closes #1105)
+- **`apm install --update` no longer fails for GHES/generic hosts** that rely on git credential helpers (e.g., `git-credential-manager`) for authentication. The preflight auth probe was blocking credential helpers by setting `GIT_CONFIG_GLOBAL=/dev/null`; it now uses the same relaxed environment as the clone fallback path for non-GitHub/non-ADO hosts. (#1082)
+- `apm compile --dry-run -t copilot` now faithfully simulates the hand-authored file guard: a `.github/copilot-instructions.md` lacking the APM marker is reported as `skipped=1` (matching the real run) instead of as `generated=1`. Previously dry-run would claim a write that a real run would refuse, giving CI preview gates a false signal. (#1048)
+- `apm compile -t claude,copilot` (and any multi-target list including `copilot`) now correctly generates `.github/copilot-instructions.md`; previously it was silently skipped on the multi-target code path. (#1048)
+- `apm compile` no longer overwrites a hand-authored `.github/copilot-instructions.md`; if the file lacks the APM-generated marker, regeneration is skipped with a warning that names the literal marker line (`<!-- Generated by APM CLI from .apm/ primitives -->`) so users can self-serve recovery. **Migration:** to adopt APM management of an existing file, either delete or rename it and re-run `apm compile`, or prepend the marker line to the top of the file and re-run `apm compile`. (#1048)
+- Generated footer in `.github/copilot-instructions.md` now reads `apm compile` (was `specify apm compile`). (#1048)
+- `apm compile --targets claude` no longer lists `@apm_modules/{owner}/{package}/CLAUDE.md` dependencies for packages that don't have a `CLAUDE.md` file on disk (#1047)
+- **`apm prune` no longer flags directories it put there itself** -- skills installed from a subdirectory path (e.g., `owner/repo/.apm/skills/skill-name`) no longer cause the parent `owner/repo/` clone to appear as an orphan. Fixes spurious removal prompts in multi-skill and monorepo-style setups. The same fix applies to `apm deps list` and `apm compile`. A genuinely orphaned `owner/repo` package is still flagged even when a sibling subdirectory dep shares the same `owner/repo` root. No changes to `apm.yml` or the lockfile are required to benefit from this fix. (#1050)
+
+## [0.11.0] - 2026-04-29
+
+### Added
+
+- **`apm pack` is now the single command for marketplace builds** -- with an `apm.yml` `marketplace:` block it emits `.claude-plugin/marketplace.json` directly. New flags: `--offline`, `--include-prerelease`, `--marketplace-output PATH`. (#722)
+- **Author marketplaces from `apm.yml`.** New top-level `marketplace:` block, `apm marketplace migrate` to consolidate legacy `marketplace.yml`, `apm init --marketplace` to scaffold, and first-class `source: ./local/path` package sources. (#1038)
+- **Codex CLI installs are now project-scoped.** MCP config lands in `.codex/config.toml` for project installs (no more polluting the user-global file); user-scope primitive deployment is also supported. (#803)
+- **Cross-org private packages in `shared/apm.md`** via a new `apps:` array (one GitHub App per credential group, matrix fan-out). The single-app shorthand (`app-id` / `private-key` / `owner` / `repositories`) is preserved. (#982)
+
+### Changed
+
+- **`apm marketplace add` preserves the upstream alias** -- now defaults to the `name` declared in the fetched `marketplace.json` instead of the repo name, so install instructions in third-party READMEs work verbatim. (#1032)
+- **`--policy` / `--policy-source` help is unified** across CLI and docs, with lockstep tests pinning all surfaces against drift. (#1000, closes #998 #994)
+- **BREAKING: invalid `target:` values now fail loud.** CSV strings (`target: a,b,c`), unknown tokens, empty values, and `all` mixed with other targets used to silently no-op `apm install` / `apm compile`; they now raise a parse error. Omitting `target:` still auto-detects. (#820)
+- Rename `DownloadStrategyManager` -> `DownloadDelegate` and fix double-checked-locking bug in marketplace registry `_load()`. (#918)
+
+### Removed
+
+- **BREAKING: `apm marketplace build` removed** -- `apm pack` is the replacement; the old verb exits 2 with a migration hint. The `marketplace_authoring` experimental flag is also gone (authoring is GA). (#722)
+
+### Deprecated
+
+- Standalone `marketplace.yml` -- still loaded with a deprecation warning, removal slated for v0.13. (#1038)
+
+### Fixed
+
+- **`apm install` works with your existing credential chain (SSO, EMU, GHES tokens).** Validation now uses the same credentials as the actual clone (PAT header-injected, then git credential helper, then SSH for explicit `#ref` pins) -- enterprise users whose env-var PAT has narrower SSO/EMU access than their `gh auth setup-git` / OS keychain are no longer false-rejected by the installer's API probe. Validation logic is now a separate module (`github_downloader_validation.py`), laying groundwork for future credential-provider extensibility. (#941)
+- **`shared/apm.md` single-credential-group runs no longer fail validation** with a spurious `missing APM bundles: apm-default` -- a normalisation step recreates the per-group subdir layout that `actions/download-artifact@v5+` flattens away. (#1051)
+- **`apm pack` works against GitHub Enterprise and other Git hosts** -- honors `GITHUB_HOST` for GHES auth and accepts GitHub / GHES / GitLab / Bitbucket / ADO / SSH URL forms. (#1008)
+- **ADO Entra ID auth no longer silently fails.** Bearer tokens from `az account get-access-token` are plumbed through, errors are typed + actionable (4-case diagnostic), and `apm install --update` pre-flights auth before touching files. (#1015)
+- `apm marketplace add` now uses the `name` field from the fetched `marketplace.json` as the default local alias, falling back to the repo name only when the manifest omits it or declares an invalid value. This restores parity with Claude Code install instructions (e.g. `addyosmani/agent-skills` registers as `addy-agent-skills` as that repo's README documents). Existing marketplace entries are unaffected; use `--name` to override explicitly. (#1032)
+- `GEMINI.md` is now only created when explicitly targeted. (#1019)
+- Windows-friendly: auto-discovery CLI output uses POSIX paths so `apm install` / `apm compile` output is readable on Windows. (#1018)
+- Generated-file footer no longer prints stray `specify` before `apm compile`. (#996)
+- CodeQL `clear-text-storage` false-positive resolved (variable rename). (#1002)
+
+## [0.10.0] - 2026-04-27
+
+### Added
+
+- **Microsoft 365 Copilot Cowork** target works end-to-end: `apm install --target cowork --global` deploys skills to OneDrive (behind `apm experimental enable cowork`). (#926)
+- **[Experimental] `apm marketplace` authoring CLI**: maintainers can scaffold, build, validate, and publish Anthropic-compliant marketplaces from the CLI (`init` -> `package add` -> `build` -> `publish`). (#790)
+- README "Coming from `npx skills add`?" 30-second migration table for users arriving from the agentskills.io ecosystem. (#980)
+- `NullCommandLogger` class (`src/apm_cli/core/null_logger.py`) -- null-object pattern for logger injection, eliminating 32 conditional logger forks in `MCPIntegrator`. (#918)
+- Thread-safety infrastructure: `_get_console()` double-checked locking singleton, marketplace registry cache `threading.Lock`. (#918)
+- 40 characterisation tests for `MCPIntegrator` methods (`install()`, `remove_stale()`, `collect_transitive()`). (#918)
+- `_build_children_index()` helper in uninstall engine for O(n) reverse-dependency lookups. (#918)
+- Performance benchmarks and scaling guards for complexity audit refactors (`tests/benchmarks/test_audit_benchmarks.py`, `test_scaling_guards.py`): 16 benchmark tests covering dependency parsing, children index, primitive discovery, registry cache, console singleton, and NullCommandLogger; 3 scaling-ratio guards run in the default test suite to catch O(n^2) regressions. (#918)
+- Expanded performance benchmark suite with P0 and P1 hot-path coverage: `compute_package_hash`, `get_all_dependencies`, `is_semantically_equivalent`, `flatten_dependencies`, `to_yaml`, `compute_deployed_hashes`, `optimize_instruction_placement`, `_rewrite_markdown_links`, `partition_managed_files`, LockFile round-trip, and `register_contexts` -- 52 new benchmark tests plus 2 additional scaling guards. (#918)
+- Iteration 2 benchmark coverage: `_match_double_star` recursive glob matcher, `ContentScanner.scan_text` and `strip_dangerous` security scanning, `build_dependency_tree` BFS resolver, `_parse_ls_remote_output` and `_sort_remote_refs` git ref parsing, `analyze_directory_structure` compiler analysis, and `collect_transitive` MCP integration -- 77 new benchmark tests plus 1 additional scaling guard. (#918)
+
+### Changed
+
+- [Experimental] `apm marketplace plugin` renamed to `apm marketplace package` (npm/pip/cargo familiarity); `--help` grouped into Consumer / Authoring sections. (#722)
+- `MCPIntegrator` logger handling: methods default to `NullCommandLogger` instead of `None`, removing 32 `if logger:` / `elif logger:` conditional forks (net -91 production lines). (#918)
+- Install pipeline lockfile reads reduced from 2x to 1x by caching early lockfile on `InstallContext`. (#918)
+- `APMPackage.from_apm_yml()`: deduplicated dependency parsing via `_parse_dependency_dict()` classmethod. (#918)
+- Uninstall engine BFS orphan detection: O(n^2) full-scan replaced with O(n) reverse-dep index. (#918)
+- Primitive discovery scanning: 9+ `glob.glob()` calls replaced with single `os.walk` + `fnmatch` pass. (#918)
+- MCP registry config reads: O(servers x runtimes) reduced to O(runtimes) via function-scoped cache. (#918)
+- `_get_console()`: returns thread-safe singleton instead of creating new `Console()` per call. (#918)
+- Marketplace registry cache: `_load()`, `_save()`, `_invalidate_cache()` protected with `threading.Lock`. (#918)
+- Complexity audit -- decomposed god functions in `reference.py`, `audit.py`, `deps/cli.py`, and `script_runner.py` into focused single-responsibility helpers (largest: `audit()` 290 lines split into thin dispatcher + `_audit_ci_gate` + `_audit_content_scan` with shared `_AuditConfig` dataclass). (#918)
+- Decomposed `github_downloader.py` into three modules: `git_remote_ops.py` (ref parsing), `download_strategies.py` (backend downloads), and a slimmed orchestrator. (#918)
+- Decomposed `install()` god function (555 lines) into focused helpers with `InstallContext` parameter bundle. (#918)
+
+### Fixed
+
+- Docs site auto-deploys again after bot-cut releases (now triggered on tag push). (#981)
+- Bare `except:` clauses in `formatters.py` (5) and `script_formatters.py` (2) now catch `Exception` instead of `BaseException`, allowing `KeyboardInterrupt` and `SystemExit` to propagate correctly. (#918)
+- Silent auth fallback in `discovery.py:_get_token_for_host()` now logs `logger.debug()` when the token manager fails, making credential resolution failures visible with `--verbose`. (#918)
+- Silent `except Exception: pass` handlers in `agents_compiler.py` (3) now emit `_logger.debug()` traces for config loading and constitution injection failures. (#918)
+- Double `iterdir()` walk in `script_runner.py:_resolve_prompt_file()` collapsed to a single pass. (#918)
+
+### Documentation
+
+- Clarify `NullCommandLogger` partial interface and visible-output semantics in docstring. (#918)
+
+### Maintainer tooling
+
+- `pr-description-skill` ships an evals suite so PR-description quality regressions are caught in CI without an LLM API key. (#985)
+- `pr-description-skill` mermaid guidance hardened with `assets/mermaid-conventions.md` (diagram-type-by-intent + GitHub-renderer gotchas `mmdc` misses). (#984)
+- Cowork tests mock `sys.platform` so the macOS auto-detection paths don't false-fail on Windows CI. (#989)
+
+## [0.9.4] - 2026-04-27
+
+### Added
+
+- **Day-0 install parity with `npx skills add`**: every public repo that installs cleanly with `npx skills add owner/repo` now installs with `apm install owner/repo`. APM recognises bare `skills/<name>/SKILL.md` (vercel-labs/agent-skills, xixu-me/skills, larksuite/cli, the agentskills.io ecosystem) as a first-class shape (`SKILL_BUNDLE`); `apm.yml` is optional. `--skill <NAME>` (repeatable) selects a subset and **persists** it to `apm.yml` + `apm.lock.yaml`, so bare `apm install` is reproducible across machines. `--skill '*'` resets; `apm audit --ci` flags drift. (#974)
+- `curl | sh` install works in air-gapped, GHE, and internal-mirror setups: `install.sh` now reads `APM_INSTALL_DIR`, `GITHUB_URL`, `APM_REPO`, and `VERSION` (or `@vX.Y.Z` arg) -- pinning a version skips the GitHub API entirely, so corporate runners without api.github.com egress can bootstrap APM. (#660)
+
+### Changed
+
+- `apm marketplace` authoring commands (init, build, check, outdated, doctor, publish, package) ring-fenced behind `apm experimental enable marketplace-authoring` feature flag (default: disabled) (#790)
+### Fixed
+
+- `apm install` no longer fails behind corporate TLS-intercepting proxies: validation now honours `REQUESTS_CA_BUNDLE` instead of misreporting CA failures as auth errors. (#911)
+- `apm experimental <subcommand> --help` now shows the subcommand's own help; CLI help text and short flags aligned from the 2026-04-24 audit. (#910, #903)
+
+### Maintainer tooling
+
+- Untriaged issues are auto-triaged by the `apm-triage-panel` skill on a daily oldest-first sweep (max 10/run) plus `status/needs-triage` for on-demand. Decisions are agentic proposals; any maintainer label edit wins. (#954)
+- Docs site auto-deploys again after bot-cut releases (workaround for GitHub's `GITHUB_TOKEN`-suppressed `release: published` event). Silently broken since v0.9.3. (#953)
+- Triage-panel themed issues now reach the PGS project board (dispatches `project-sync` directly; same `GITHUB_TOKEN` event-suppression class as #953). (#971)
+- Issue templates use canonical APM labels; `python-architect` agent documents the mermaid `classDiagram :::cssClass` GitHub-render trap. (#958, #970)
+
+## [0.9.3] - 2026-04-26
+
+### Added
+
+- **Gemini CLI** as a supported APM target (`--target gemini`): auto-detects `.gemini/`, writes MCP config to `.gemini/settings.json`, and adds `apm runtime setup|remove gemini`. (#917)
+- Experimental `cowork` target for Microsoft 365 Copilot Cowork custom-skill deployment via OneDrive (`apm experimental enable cowork`; `apm install --target cowork --global`; persisted via `apm config set cowork-skills-dir`). (#913)
+- `apm experimental` command group (`list` / `enable` / `disable` / `reset`) lets you opt into new behaviour before it graduates to default. Ships with the `verbose-version` flag. (#849)
+- `apm audit --ci` now verifies hash integrity of locally deployed `.apm/` files so hand-edits and config drift fail CI instead of slipping through. (#887)
+- `includes:` manifest field (`auto` or list) gives you explicit control over which local `.apm/` files are deployed; pair with `policy.manifest.require_explicit_includes` to block silent expansion. Audit raises an `includes-consent` advisory while you migrate. (#887)
+- `apm-triage-panel` skill: three-persona issue triage panel (DevX UX, Supply Chain Security, APM CEO) emitting a single labelled-decision comment, mirroring `apm-review-panel`. (#915)
+- `apm-primitives-architect` persona for designing and critiquing `.apm/` skill bundles, plus a `pr-description-skill` that enforces self-sufficient PR bodies (TL;DR/Problem/Approach/Implementation/Diagrams/Trade-offs/Benefits/Validation/How-to-test) with anchored citations and validated mermaid. (#882, #884)
+- New docs guide [`dev-only-primitives`](https://danielmeppiel.github.io/awd-cli/guides/dev-only-primitives/): canonical pattern for maintainer-only primitives that must not ride into your published bundle. (#949)
+- Maintainer tooling: PGS project-board sync workflow keeps issues in lockstep with labels/milestones; `APM Self-Check` CI job dogfoods `apm audit --ci` and regeneration-drift gates. (#919, #885)
+
+### Changed
+
+- HYBRID-skill review pipeline: `apm-review-panel` now produces a single CEO-synthesized verdict per run (no per-persona spam), with Hybrid E auth-expert routing and `python-architect`'s mandatory three-artifact contract. PRs get one high-signal comment. (#882, #905, #907, #908)
+- Faster primitive discovery on large repos: `compilation.exclude` patterns now prune traversal at the directory level instead of post-filtering. (#870)
+- `apm-action` bumped to `v1.4.2` (used by `shared/apm.md` workflows): fixes restore-mode workspace pollution that was overwriting your tracked `apm.lock.yaml` / `apm.yml` / `apm_modules`. (#904)
+- CI release-binary smoke (Linux x64/arm64, Windows) only runs on tag/schedule/dispatch instead of every push, cutting ~15 redundant codex downloads/day; release-time gating unchanged. (#878)
+- Branch-protection docs: clarify the required check-run name is `gate` (not the workflow display string `Merge Gate / gate`). (#874)
+
+### Fixed
+
+- HYBRID packages (apm.yml + SKILL.md, no `.apm/`) and CLAUDE_SKILL packages with sibling `agents/`/`assets/`/`scripts/` dirs now install correctly via the skill-bundle path; previously `apm install` rejected them silently and looked like a hang. Direct-dependency integration failures now print `[x]` and exit 1 instead of failing silently. (#946)
+- `apm update` no longer breaks on Debian trixie arm64, Fedora 43, and similar distros where the bundled PyInstaller `LD_LIBRARY_PATH` was leaking into system `curl`/`tar` and triggering `libssl.so.3: version 'OPENSSL_3.2.0' not found`. Closes #894 (#899)
+- `apm install` at user scope no longer recursive-globs your entire home directory: scan is scoped to `~/.apm/`. Fixes #830 (#850)
+- `apm audit --ci` now also catches drift / missing / tampered files for locally-authored `.apm/` content (not just installed packages); `apm pack` strips local-content fields so they can't leak into bundled lockfiles. (#887)
+- `apm install` for ADO orgs that disable PAT creation: error messages on generic git hosts now surface the custom port too. Custom transport types in MCP-server config are validated up front (defaulting to `http` when missing) instead of writing garbage. Closes #791 (#812)
+- Windows: `apm install` no longer false-positives `PathTraversalError` on policy cache dirs that don't yet exist (8.3 short-name resolution mismatch). (#895)
+- macOS: long inline policy YAML strings (>1023 bytes) no longer crash with `OSError [Errno 63] File name too long`; they fall back to string-mode parsing. Closes #848 (#860)
+- Merge queue: `gate` check now reports inside the queue (added `merge_group` trigger), unblocking PRs that were stuck on "Expected -- Waiting for status to be reported". (#921)
+- `apm-review-panel` workflow only runs on PRs labelled `panel-review`, eliminating spurious panel runs on every PR. (#948)
+
+### Removed
+
+- Deleted dead `ci-integration-pr-stub.yml` workflow stubs left over from the pre-merge-gate model. No user impact; reduces CI noise. (#875)
+
+## [0.9.2] - 2026-04-23
+
+### Added
+
+- `apm install` supports Azure DevOps AAD bearer-token auth via `az account get-access-token`, with PAT-first fallback for orgs that disable PAT creation. Closes #852 (#856)
+- New `enterprise/governance-guide.md`: flagship governance reference for CISO / VPE / Platform Tech Lead audiences; trims duplication across `governance.md`, `apm-policy.md`, `integrations/github-rulesets.md`; adds `templates/apm-policy-starter.yml`. (#851)
+- Enterprise docs IA refactor: hub page + merged team guides, deduped governance content. (#858)
+- Landing page rewritten around the three-pillar spine. (#855)
+- First-package tutorial rewritten end-to-end; fixes `.apm/` anatomy hallucinations. (#866)
+- `apm install --ssh` / `--https` flags and `APM_GIT_PROTOCOL=ssh|https` env to pick the initial transport for shorthand dependencies (#778)
+- `apm install --allow-protocol-fallback` flag and `APM_ALLOW_PROTOCOL_FALLBACK=1` env as the migration escape hatch for cross-protocol fallback (#778)
+- Add APM Review Panel skill (`.github/skills/apm-review-panel/`) and four new specialist personas (`devx-ux-expert`, `supply-chain-security-expert`, `apm-ceo`, `oss-growth-hacker`) with auto-activating per-persona skills. Routes specialist findings through an APM CEO arbiter for strategic / breaking-change calls, with the OSS growth hacker side-channeling adoption insights via `WIP/growth-strategy.md`. Instrumentation per Handbook Ch. 9 (`The Instrumented Codebase`); PROSE-compliant (thin SKILL.md routers, persona detail lazy-loaded via markdown links, explicit boundaries per persona).
+- `apm view plugin@marketplace` displays marketplace plugin metadata (name, version, source, description) (#514)
+- `apm outdated` checks marketplace plugin refs and shows a "Source" column distinguishing marketplace vs git updates (#514)
+- `apm marketplace validate` command with schema validation and duplicate name detection (#514)
+- Ref immutability advisory: caches plugin-to-ref pins and warns when a previously pinned plugin's ref changes (#514)
+- Multi-marketplace shadow detection: warns when the same plugin name appears in multiple registered marketplaces (#514)
+
+### Changed
+
+- gh-aw workflows now use `imports:` for shared APM context instead of the deprecated `dependencies:` field. (#864)
+- CI: `merge-gate.yml` orchestrator turns dropped `pull_request` webhook deliveries into clear red checks instead of stuck `Expected -- Waiting for status to be reported`. (#865)
+- CI: `Merge Gate / gate` aggregates all PR-time required checks (`Build & Test (Linux)` + 4 stubs) into a single verdict; branch protection requires only this one check, decoupling the ruleset from CI workflow topology (Tide / bors pattern). (#867, #868)
+- CI: `merge-gate.yml` simplified to a single `pull_request` trigger with `workflow_dispatch` for manual recovery; the dual-trigger redundancy attempt was poisoning the branch-protection rollup with `CANCELLED` check-runs. (#868)
+
+### Fixed
+
+- `apm install` surfaces the custom port in clone / `ls-remote` error messages for generic git hosts. (#804)
 
 ## [0.9.1] - 2026-04-22
 
@@ -27,9 +239,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `pr-review-panel` workflow now runs on PRs from forks: switched to `pull_request_target` with label-only triggering and a workflow-dispatch path (#826, #836, #837)
-
-### Fixed
-
 - Lowercase the host axis of the `_fallback_port_warned` dedup key so deps that differ only in hostname casing collapse to one cross-protocol fallback warning, matching the `AuthResolver._cache` convention (RFC 4343). Closes #800 (#815)
 
 ## [0.9.0] - 2026-04-21

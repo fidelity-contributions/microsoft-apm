@@ -121,7 +121,7 @@ download → scan source → block or deploy → report
 
 Content scanning extends beyond install:
 
-- **`apm compile`** scans compiled output (AGENTS.md, CLAUDE.md, commands) before writing to disk. Critical findings cause `apm compile` to exit with code 1 after writing — defense-in-depth since source files were already scanned at install, but compilation assembles content from multiple sources.
+- **`apm compile`** scans compiled output (AGENTS.md, CLAUDE.md, `.github/copilot-instructions.md`, commands) before writing to disk. Critical findings cause `apm compile` to exit with code 1 after writing — defense-in-depth since source files were already scanned at install, but compilation assembles content from multiple sources. `.github/copilot-instructions.md` is assembled from global instructions in `.apm/instructions/`, including those installed under `apm_modules/`.
 - **`apm pack`** scans files before bundling. This catches hidden characters before a package is published, preventing authors from accidentally distributing tainted content.
 - **`apm unpack`** scans bundle contents before deployment. This is a pre-deployment gate matching `apm install` — critical findings block deployment unless `--force` is used.
 
@@ -205,6 +205,7 @@ Symlinks are never followed during file discovery or artifact operations:
 - **Tree copy operations** skip symlinks entirely -- they are excluded from the copy via an ignore filter.
 - **MCP configuration files** that are symlinks are rejected with a warning and not parsed.
 - **Manifest parsing** requires files to pass both `.is_file()` and `not .is_symlink()` checks.
+- **Manifest integrity** -- a malformed `apm.yml` (invalid YAML or non-mapping content) triggers a failing `manifest-parse` audit check. Policy and baseline CI checks never silently pass when the manifest cannot be parsed. If this check fires, fix the YAML syntax error in your `apm.yml` and re-run the audit.
 - **Archive creation** -- `apm pack` excludes symlinks from bundled archives. Packaged artifacts contain no symbolic links, preventing symlink-based escape attacks in distributed bundles.
 
 This prevents symlink-based attacks that could escape allowed directories or cause APM to read or write outside the project root.
@@ -222,7 +223,7 @@ When APM deploys a file, it checks whether a file already exists at the target p
 APM separates production and development dependencies:
 
 - **Production dependencies** (`dependencies.apm`) are included in plugin bundles and shared packages.
-- **Development dependencies** (`devDependencies.apm`, installed via `apm install --dev`) are resolved and cached locally but **excluded** from `apm pack --format plugin` output.
+- **Development dependencies** (`devDependencies.apm`, installed via `apm install --dev`) are resolved and cached locally but **excluded** from `apm pack` output (both plugin format -- the default -- and `--format apm`).
 
 This prevents transitive inclusion of development-only packages (test fixtures, linting rules, internal helpers) in distributed artifacts. The lockfile marks dev dependencies with `is_dev: true` for explicit tracking. See the [Lock File Specification](../../reference/lockfile-spec/#42-dependency-entries) for field details.
 
@@ -255,8 +256,20 @@ APM authenticates to git hosts using personal access tokens (PATs) read from env
 - **Never stored in files.** Tokens are read from the environment at runtime. They are never written to `apm.yml`, `apm.lock.yaml`, or any generated file.
 - **Never logged.** Token values are not included in console output, error messages, or debug logs.
 - **Scoped to their git host.** A GitHub token is only sent to GitHub. An Azure DevOps token is only sent to Azure DevOps. Tokens are never transmitted to any other endpoint.
+- **Injected via transient git config.** APM passes credentials with `http.extraheader` for the duration of a single git invocation; tokens are never embedded in URLs and are not visible in `ps` or process listings.
 
 For GitHub, a fine-grained PAT with read-only `Contents` permission on the repositories you depend on is sufficient.
+
+### Azure DevOps AAD bearer tokens
+
+When `ADO_APM_PAT` is unset, APM can authenticate to Azure DevOps with a Microsoft Entra ID bearer token issued on demand by the Azure CLI (`az account get-access-token`). The posture:
+
+- **Short-lived.** Tokens expire in roughly 60 minutes, are acquired per resolution, and are never persisted by APM.
+- **No new secrets in manifests.** Nothing is written to `apm.yml` or `apm.lock.yaml`. The token never crosses the `apm.yml`/lockfile boundary.
+- **Compatible with managed-identity / service-account-only orgs.** Works in environments where PAT creation is disabled, including WIF-backed pipelines.
+- **Same transport rules as PATs.** Bearer values are injected via `http.extraheader`, scoped to ADO hosts only, and never logged.
+
+See [Authentication: AAD bearer tokens](../../getting-started/authentication/#authenticating-with-microsoft-entra-id-aad-bearer-tokens) for the resolution precedence and CI patterns.
 
 ## Attack surface comparison
 

@@ -71,40 +71,12 @@ The APM CLI supports the following types of primitives:
 
 > **Note**: Both `.agent.md` (new format) and `.chatmode.md` (legacy format) are fully supported. VSCode provides Quick Fix actions to help migrate from `.chatmode.md` to `.agent.md`.
 
-## File Structure
+## Where primitives live
 
-### Supported Locations
-
-APM discovers primitives in these locations:
-
-```
-# APM-native structure
-.apm/
-├── agents/             # AI assistant definitions (new format)
-│   └── *.agent.md
-├── chatmodes/          # AI assistant definitions (legacy format)
-│   └── *.chatmode.md
-├── instructions/        # Coding standards and guidelines  
-│   └── *.instructions.md
-└── hooks/              # Lifecycle event handlers
-    ├── *.json          # Hook definitions (JSON)
-    └── scripts/        # Referenced scripts
-        └── *.sh, *.py
-
-# VSCode-compatible structure  
-.github/
-├── agents/             # VSCode Copilot agents (new format)
-│   └── *.agent.md
-├── chatmodes/          # VSCode Copilot chatmodes (legacy format)
-│   └── *.chatmode.md
-└── instructions/       # VSCode Copilot instructions
-    └── *.instructions.md
-
-# Generic files (anywhere in project)
-*.agent.md
-*.chatmode.md
-*.instructions.md
-```
+Primitives are authored in `.apm/` and deployed to runtime folders
+(`.github/`, `.claude/`, `.cursor/`, `.opencode/`) by `apm install` and
+`apm compile`. For the full layout, source-vs-output distinction, and
+discovery rules, see [Anatomy of an APM Package](../anatomy-of-an-apm-package/).
 
 ## Component Types Overview
 
@@ -224,7 +196,7 @@ Instructions provide coding standards, conventions, and guidelines that apply to
 
 **Frontmatter:**
 - `description` (required) - Clear explanation of the standards
-- `applyTo` (required) - Glob pattern for file targeting (e.g., `"**/*.py"`)
+- `applyTo` (optional) - Glob pattern for file targeting (e.g., `"**/*.py"`). When omitted, the instruction is treated as global and rendered under a `## Global Instructions` section in the compiled `AGENTS.md`/`CLAUDE.md` (applies to every file).
 - `author` (optional) - Creator information
 - `version` (optional) - Version string
 
@@ -307,7 +279,7 @@ The APM CLI automatically discovers and parses all primitive files in your proje
 All primitives are automatically validated during discovery:
 
 - **Agents**: Must have description and content (supports both `.agent.md` and `.chatmode.md`)
-- **Instructions**: Must have description, applyTo pattern, and content
+- **Instructions**: Must have description and content. `applyTo` is optional -- omitting it makes the instruction apply globally (a warning is emitted at compile time so authors are aware of the implicit scope).
 
 Invalid files are skipped with warning messages, allowing valid primitives to continue loading.
 
@@ -385,16 +357,7 @@ Use specific `applyTo` patterns for instructions:
 Keep primitives in version control alongside your code. Use semantic versioning for breaking changes.
 
 ### 4. Organized Structure
-Use the structured `.apm/` directories for better organization:
-```
-.apm/
-├── agents/
-│   ├── code-reviewer.agent.md
-│   └── documentation-writer.agent.md
-└── instructions/
-    ├── python-style.instructions.md
-    └── typescript-conventions.instructions.md
-```
+Use `.apm/` subdirectories by primitive type. See [Anatomy](../anatomy-of-an-apm-package/#what-apm-looks-for).
 
 ### 5. Team Collaboration
 - Include author information in frontmatter
@@ -403,16 +366,7 @@ Use the structured `.apm/` directories for better organization:
 
 ## Integration with VSCode
 
-For VSCode Copilot compatibility, place files in `.github/` directories:
-```
-.github/
-├── agents/
-│   └── assistant.agent.md
-└── instructions/
-    └── coding-standards.instructions.md
-```
-
-These files follow the same format and will be discovered alongside APM-specific primitives. 
+VS Code Copilot reads compiled output in `.github/`. Author in `.apm/` and let `apm install` produce it -- see [Anatomy](../anatomy-of-an-apm-package/) for the source-vs-output model.
 
 ## Error Handling
 

@@ -27,6 +27,31 @@ irm https://aka.ms/apm-windows | iex
 
 The installer automatically detects your platform (macOS/Linux/Windows, Intel/ARM), downloads the latest binary, and adds `apm` to your `PATH`.
 
+### Installer options
+
+The Unix installer supports environment variables for custom environments:
+
+```bash
+# Install a specific version
+curl -sSL https://aka.ms/apm-unix | sh -s -- @v1.2.3
+
+# Custom install directory
+curl -sSL https://aka.ms/apm-unix | APM_INSTALL_DIR=$HOME/.local/bin sh
+
+# Air-gapped / GitHub Enterprise mirror
+GITHUB_URL=https://github.corp.com VERSION=v1.2.3 sh install.sh
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APM_INSTALL_DIR` | `/usr/local/bin` | Directory for the `apm` symlink |
+| `APM_LIB_DIR` | `$(dirname APM_INSTALL_DIR)/lib/apm` | Directory for the full binary bundle |
+| `GITHUB_URL` | `https://github.com` | Base URL for downloads (mirrors, GHE) |
+| `APM_REPO` | `microsoft/apm` | GitHub repository |
+| `VERSION` | *(latest)* | Pin a specific release (skips GitHub API) |
+
+> **Note:** When using `GITHUB_URL` for a GitHub Enterprise or air-gapped mirror, set `VERSION` as well. The GitHub API call for latest-release discovery still targets `api.github.com`; `VERSION` bypasses it entirely.
+
 ## Package managers
 
 **Homebrew (macOS/Linux):**
@@ -124,7 +149,7 @@ apm --version
 
 ### `apm: command not found` (macOS / Linux)
 
-Ensure `/usr/local/bin` is in your `PATH`:
+Ensure your install directory is in your `PATH`. The default is `/usr/local/bin`:
 
 ```bash
 echo $PATH | tr ':' '\n' | grep /usr/local/bin
@@ -138,11 +163,31 @@ export PATH="/usr/local/bin:$PATH"
 
 ### Permission denied during install (macOS / Linux)
 
-Use `sudo` for system-wide installation, or install to a user-writable directory instead:
+Use `sudo` for system-wide installation, or install to a user-writable directory:
 
 ```bash
-mkdir -p ~/bin
-# then install the binary to ~/bin/apm and add ~/bin to PATH
+curl -sSL https://aka.ms/apm-unix | APM_INSTALL_DIR=$HOME/.local/bin sh
+```
+
+### Binary install fails on older Linux (devcontainers, Debian-based images)
+
+On systems with a glibc version older than the minimum required by the pre-built
+binary (currently glibc 2.35), the binary will fail to run. The installer
+automatically detects incompatible glibc versions and falls back to
+`pip install --user apm-cli`.
+
+This installs the `apm` command into your user `bin` directory (commonly `~/.local/bin`).
+If `apm` is not found after installation, ensure that this directory is on your `PATH`.
+
+**Recommended fix for devcontainers on very old base images:** switch to a base
+image with glibc 2.35 or newer (e.g., the Debian `trixie` family, or
+`mcr.microsoft.com/devcontainers/universal:24-trixie`), which runs the pre-built
+binary directly without the pip fallback.
+
+If you prefer to install via pip directly:
+
+```bash
+pip install --user apm-cli
 ```
 
 ### Authentication errors when installing packages
