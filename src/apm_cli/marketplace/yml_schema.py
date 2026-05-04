@@ -44,12 +44,16 @@ from .errors import MarketplaceYmlError
 __all__ = [
     "LOCAL_SOURCE_RE",
     "SOURCE_RE",
+    "DirectPackageEntry",
     "MarketplaceBuild",
     "MarketplaceConfig",
     "MarketplaceOwner",
+    "MarketplacePackage",
     "MarketplaceYml",  # backwards-compat alias
     "MarketplaceYmlError",
     "PackageEntry",
+    "Upstream",
+    "UpstreamPackageEntry",
     "load_marketplace_from_apm_yml",
     "load_marketplace_from_legacy_yml",
     "load_marketplace_yml",
@@ -70,6 +74,16 @@ _SEMVER_RE = re.compile(
 # source field validation.
 SOURCE_RE = re.compile(r"^(?:[^/]+/[^/]+|\./.*)$")
 LOCAL_SOURCE_RE = re.compile(r"^\./")
+# Remote-only ``owner/repo`` shape -- used by upstream registration
+# validation, where local-path shorthand is not meaningful. Disallows a
+# leading ``.`` so ``./local`` is rejected, matching curator intent.
+_REMOTE_SOURCE_RE = re.compile(r"^[^./\s][^/\s]*/[^/\s]+$")
+# Upstream alias: identifier-like, used as a directory-safe key in cache
+# paths and lockfile keys. Conservative character set keeps cache keys
+# Windows-safe and avoids collisions with the ``__`` cache delimiter.
+_UPSTREAM_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Hostname validation -- minimal sanity check; refers to git-host domain.
+_UPSTREAM_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,253}$")
 
 # Placeholder tokens accepted in ``tag_pattern`` / ``build.tagPattern``.
 _TAG_PLACEHOLDERS = ("{version}", "{name}")
@@ -100,6 +114,49 @@ _PACKAGE_ENTRY_KEYS = frozenset(
         "license",
         "repository",
         "keywords",
+    }
+)
+
+# Alias for the direct-package shape; used when explicitly distinguishing
+# from the upstream-package shape in builder dispatch and tests.
+_DIRECT_PACKAGE_KEYS = _PACKAGE_ENTRY_KEYS
+
+# Strict key set for upstream-sourced package entries. NOTE: ``source``
+# and ``subdir`` are deliberately excluded -- presence of either alongside
+# ``upstream`` is an authoring error caught at parse time.
+_UPSTREAM_PACKAGE_KEYS = frozenset(
+    {
+        "name",
+        "upstream",
+        "plugin",
+        "version",
+        "ref",
+        "tag_pattern",
+        "include_prerelease",
+        "allow_head",
+        # Anthropic pass-through overrides (curator may override
+        # individual display fields without touching the upstream
+        # plugin's content).
+        "description",
+        "homepage",
+        "tags",
+        "keywords",
+        "author",
+        "license",
+        "repository",
+    }
+)
+
+# Strict key set for entries inside the ``upstreams:`` block.
+_UPSTREAM_REGISTRATION_KEYS = frozenset(
+    {
+        "alias",
+        "repo",
+        "path",
+        "ref",
+        "branch",
+        "host",
+        "allow_head",
     }
 )
 
@@ -166,6 +223,7 @@ _APM_MARKETPLACE_KEYS = frozenset(
         "metadata",
         "build",
         "packages",
+        "upstreams",
     }
 )
 # ---------------------------------------------------------------------------
@@ -226,6 +284,116 @@ class PackageEntry:
     is_local: bool = False
 
 
+# Alias for explicit naming in dispatch / tests; identical to PackageEntry.
+DirectPackageEntry = PackageEntry
+
+
+@dataclass(frozen=True)
+class Upstream:
+    """A registered external marketplace pointer.
+
+    Declared in ``apm.yml -> marketplace.upstreams[]``. Each entry is
+    addressed by its ``alias`` from upstream-sourced ``packages[]``
+    entries (via the ``upstream:`` field).
+
+    Attributes
+    ----------
+    alias : str
+        Curator-chosen identifier; must match
+        ``[A-Za-z0-9][A-Za-z0-9_-]{0,63}`` so it is safe to use as a
+        directory-segment in cache paths and as a lockfile key.
+    repo : str
+        ``owner/repo`` of the upstream marketplace.
+    path : str
+        Path to the upstream ``marketplace.json`` within ``repo``.
+        Defaults to ``.claude-plugin/marketplace.json``.
+    ref : str | None
+        Pinned commit SHA or tag for the upstream manifest. Required
+        for reproducible builds; if absent, ``allow_head`` must be
+        ``True`` and ``branch`` HEAD is used (with a build warning).
+    branch : str
+        Branch tracked when ``ref`` is absent and ``allow_head`` is
+        ``True``. Defaults to ``main``.
+    host : str
+        Git host. Defaults to ``github.com``.
+    allow_head : bool
+        Curator opt-in to track a moving branch HEAD. Default ``False``.
+        Governance can forbid via the
+        ``marketplace.upstream.allow_unpinned_refs`` policy key.
+    """
+
+    alias: str
+    repo: str
+    path: str = ".claude-plugin/marketplace.json"
+    ref: str | None = None
+    branch: str = "main"
+    host: str = "github.com"
+    allow_head: bool = False
+
+
+@dataclass(frozen=True)
+class UpstreamPackageEntry:
+    """A ``packages[]`` entry sourced from a registered upstream.
+
+    Distinguished from :class:`PackageEntry` (the direct shape) by the
+    presence of the ``upstream`` field and the absence of ``source``.
+    The builder dispatches on ``isinstance``; mixing both shapes in the
+    same ``packages:`` list is supported.
+
+    Attributes
+    ----------
+    name : str
+        Display name in the curator's emitted ``marketplace.json``. May
+        differ from ``plugin`` when the curator renames.
+    upstream_alias : str
+        References ``upstreams[].alias``. The YAML key is ``upstream``;
+        the internal attribute is renamed because ``upstream`` would
+        clash with future API method names and to make the alias-vs-
+        plugin-name distinction explicit at use sites.
+    plugin : str | None
+        Name of the plugin in the upstream marketplace. Defaults to
+        ``name`` when absent.
+    version : str | None
+        Optional curator-supplied semver range (mutually exclusive with
+        ``ref``). Resolved against the upstream plugin's repo tags.
+    ref : str | None
+        Optional curator-supplied commit SHA or tag (overrides the
+        upstream plugin's pinned ref).
+    tag_pattern : str | None
+        Optional curator override of ``build.tagPattern`` for this
+        package's version resolution.
+    include_prerelease : bool
+        Curator override; default ``False``.
+    allow_head : bool
+        Per-entry opt-in to mutable refs. Default ``False``.
+    description, homepage, tags, author, license, repository :
+        Optional Anthropic pass-through overrides; if absent, the
+        upstream plugin's values pass through verbatim.
+    """
+
+    name: str
+    upstream_alias: str
+    plugin: str | None = None
+    # APM-only fields (overrides; mutually exclusive `version`/`ref`)
+    version: str | None = None
+    ref: str | None = None
+    tag_pattern: str | None = None
+    include_prerelease: bool = False
+    allow_head: bool = False
+    # Anthropic pass-through overrides
+    description: str | None = None
+    homepage: str | None = None
+    tags: tuple[str, ...] = ()
+    author: Mapping[str, str] | None = None
+    license: str | None = None
+    repository: str | None = None
+
+
+# Public union alias for the heterogeneous ``packages`` collection. The
+# builder dispatches on ``isinstance`` to pick the correct emit path.
+MarketplacePackage = PackageEntry | UpstreamPackageEntry
+
+
 @dataclass(frozen=True)
 class MarketplaceConfig:
     """Parsed marketplace configuration.
@@ -251,7 +419,8 @@ class MarketplaceConfig:
     output: str = ".claude-plugin/marketplace.json"
     metadata: dict[str, Any] = field(default_factory=dict)
     build: MarketplaceBuild = field(default_factory=MarketplaceBuild)
-    packages: tuple[PackageEntry, ...] = ()
+    packages: tuple[MarketplacePackage, ...] = ()
+    upstreams: tuple[Upstream, ...] = ()
     # Origin tracking + override-detection metadata
     source_path: Path | None = None
     is_legacy: bool = False
@@ -373,13 +542,40 @@ def _parse_build(raw: Any) -> MarketplaceBuild:
     return MarketplaceBuild(tag_pattern=tag_pattern)
 
 
-def _parse_package_entry(raw: Any, index: int) -> PackageEntry:
-    """Parse and validate a single ``packages`` entry."""
+def _parse_package_entry(raw: Any, index: int) -> MarketplacePackage:
+    """Dispatch to the direct-package or upstream-package parser.
+
+    Discriminates on the presence of ``source`` vs ``upstream``. Both
+    keys present, or neither, is a hard error caught here so the
+    individual shape parsers can apply their own strict key sets.
+    """
     if not isinstance(raw, dict):
         raise MarketplaceYmlError(f"packages[{index}] must be a mapping")
 
+    has_source = "source" in raw and raw["source"] is not None
+    has_upstream = "upstream" in raw and raw["upstream"] is not None
+
+    if has_source and has_upstream:
+        raise MarketplaceYmlError(
+            f"packages[{index}]: 'source' and 'upstream' are mutually "
+            f"exclusive (a package is either a direct git source or "
+            f"sourced from a registered upstream, never both)"
+        )
+    if not has_source and not has_upstream:
+        raise MarketplaceYmlError(
+            f"packages[{index}]: requires exactly one of 'source' "
+            f"(direct) or 'upstream' (upstream-sourced)"
+        )
+
+    if has_upstream:
+        return _parse_upstream_package_entry(raw, index)
+    return _parse_direct_package_entry(raw, index)
+
+
+def _parse_direct_package_entry(raw: dict[str, Any], index: int) -> PackageEntry:
+    """Parse and validate a single direct ``packages`` entry."""
     # -- strict key check --
-    _check_unknown_keys(raw, _PACKAGE_ENTRY_KEYS, context=f"packages[{index}]")
+    _check_unknown_keys(raw, _DIRECT_PACKAGE_KEYS, context=f"packages[{index}]")
 
     name = _require_str(raw, "name", context=f"packages[{index}]")
     source = _require_str(raw, "source", context=f"packages[{index}]")
@@ -527,6 +723,241 @@ def _parse_package_entry(raw: Any, index: int) -> PackageEntry:
         license=license_val,
         repository=repository,
         is_local=is_local,
+    )
+
+
+def _parse_upstream_package_entry(raw: dict[str, Any], index: int) -> UpstreamPackageEntry:
+    """Parse and validate a single upstream-sourced ``packages`` entry.
+
+    The strict key set forbids ``source`` and ``subdir`` -- their
+    presence on an upstream entry is an authoring error caught here.
+    Cross-validation that ``upstream`` references a declared alias
+    happens later in :func:`_build_config` once the ``upstreams:``
+    block has been parsed.
+    """
+    ctx = f"packages[{index}]"
+    _check_unknown_keys(raw, _UPSTREAM_PACKAGE_KEYS, context=ctx)
+
+    name = _require_str(raw, "name", context=ctx)
+    upstream_alias = _require_str(raw, "upstream", context=ctx)
+    if not _UPSTREAM_ALIAS_RE.match(upstream_alias):
+        raise MarketplaceYmlError(
+            f"'{ctx}.upstream' '{upstream_alias}' is not a valid alias "
+            f"(allowed: leading alphanumeric, then alphanumerics/'_'/'-', "
+            f"max 64 chars)"
+        )
+
+    plugin: str | None = raw.get("plugin")
+    if plugin is not None:
+        if not isinstance(plugin, str) or not plugin.strip():
+            raise MarketplaceYmlError(f"'{ctx}.plugin' must be a non-empty string")
+        plugin = plugin.strip()
+
+    # APM-only: version (semver range, mutually exclusive with ref)
+    version: str | None = raw.get("version")
+    if version is not None:
+        version = str(version).strip()
+        if not version:
+            raise MarketplaceYmlError(f"'{ctx}.version' must be a non-empty string")
+
+    # APM-only: ref (commit SHA or tag)
+    ref: str | None = raw.get("ref")
+    if ref is not None:
+        ref = str(ref).strip()
+        if not ref:
+            raise MarketplaceYmlError(f"'{ctx}.ref' must be a non-empty string")
+
+    if version is not None and ref is not None:
+        raise MarketplaceYmlError(
+            f"'{ctx}': 'version' and 'ref' are mutually exclusive "
+            f"(precedence: explicit ref wins; specify only one)"
+        )
+
+    # APM-only: tag_pattern
+    tag_pattern: str | None = raw.get("tag_pattern")
+    if tag_pattern is not None:
+        if not isinstance(tag_pattern, str) or not tag_pattern.strip():
+            raise MarketplaceYmlError(f"'{ctx}.tag_pattern' must be a non-empty string")
+        tag_pattern = tag_pattern.strip()
+        _validate_tag_pattern(tag_pattern, context=f"{ctx}.tag_pattern")
+
+    # APM-only: include_prerelease
+    include_prerelease = raw.get("include_prerelease", False)
+    if not isinstance(include_prerelease, bool):
+        raise MarketplaceYmlError(f"'{ctx}.include_prerelease' must be a boolean")
+
+    # APM-only: allow_head (per-entry opt-in to mutable refs)
+    allow_head = raw.get("allow_head", False)
+    if not isinstance(allow_head, bool):
+        raise MarketplaceYmlError(f"'{ctx}.allow_head' must be a boolean")
+
+    # Anthropic pass-through overrides (all optional)
+    description: str | None = raw.get("description")
+    if description is not None:
+        if not isinstance(description, str) or not description.strip():
+            raise MarketplaceYmlError(f"'{ctx}.description' must be a non-empty string")
+        description = description.strip()
+
+    homepage: str | None = raw.get("homepage")
+    if homepage is not None:
+        if not isinstance(homepage, str) or not homepage.strip():
+            raise MarketplaceYmlError(f"'{ctx}.homepage' must be a non-empty string")
+        homepage = homepage.strip()
+
+    raw_tags = raw.get("tags")
+    tags: tuple[str, ...] = ()
+    if raw_tags is not None:
+        if not isinstance(raw_tags, list):
+            raise MarketplaceYmlError(f"'{ctx}.tags' must be a list of strings")
+        for i, item in enumerate(raw_tags):
+            if not isinstance(item, str):
+                raise MarketplaceYmlError(
+                    f"'{ctx}.tags[{i}]' must be a string, got {type(item).__name__}"
+                )
+        tags = tuple(str(t) for t in raw_tags)
+
+    raw_keywords = raw.get("keywords")
+    if raw_keywords is not None:
+        if not isinstance(raw_keywords, list):
+            raise MarketplaceYmlError(f"'{ctx}.keywords' must be a list of strings")
+        for i, item in enumerate(raw_keywords):
+            if not isinstance(item, str):
+                raise MarketplaceYmlError(
+                    f"'{ctx}.keywords[{i}]' must be a string, got {type(item).__name__}"
+                )
+        seen = set(tags)
+        merged = list(tags)
+        for kw in raw_keywords:
+            if kw not in seen:
+                seen.add(kw)
+                merged.append(kw)
+        tags = tuple(merged)
+
+    # S4: cap tags array length and item length (mirror direct shape).
+    if len(tags) > _MAX_TAGS_COUNT:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "packages[%d] ('%s'): tags truncated from %d to %d items",
+            index,
+            name,
+            len(tags),
+            _MAX_TAGS_COUNT,
+        )
+        tags = tags[:_MAX_TAGS_COUNT]
+    tags = tuple(t[:_MAX_TAG_LENGTH] for t in tags)
+
+    author = _parse_author(raw.get("author"), index)
+
+    license_val: str | None = raw.get("license")
+    if license_val is not None:
+        if not isinstance(license_val, str) or not license_val.strip():
+            raise MarketplaceYmlError(f"'{ctx}.license' must be a non-empty string")
+        license_val = license_val.strip()
+
+    repository: str | None = raw.get("repository")
+    if repository is not None:
+        if not isinstance(repository, str) or not repository.strip():
+            raise MarketplaceYmlError(f"'{ctx}.repository' must be a non-empty string")
+        repository = repository.strip()
+
+    return UpstreamPackageEntry(
+        name=name,
+        upstream_alias=upstream_alias,
+        plugin=plugin,
+        version=version,
+        ref=ref,
+        tag_pattern=tag_pattern,
+        include_prerelease=include_prerelease,
+        allow_head=allow_head,
+        description=description,
+        homepage=homepage,
+        tags=tags,
+        author=author,
+        license=license_val,
+        repository=repository,
+    )
+
+
+def _parse_upstream_registration(raw: Any, index: int) -> Upstream:
+    """Parse and validate a single ``upstreams[]`` block entry."""
+    ctx = f"upstreams[{index}]"
+    if not isinstance(raw, dict):
+        raise MarketplaceYmlError(f"{ctx} must be a mapping")
+
+    _check_unknown_keys(raw, _UPSTREAM_REGISTRATION_KEYS, context=ctx)
+
+    alias = _require_str(raw, "alias", context=ctx)
+    if not _UPSTREAM_ALIAS_RE.match(alias):
+        raise MarketplaceYmlError(
+            f"'{ctx}.alias' '{alias}' is not a valid alias "
+            f"(allowed: leading alphanumeric, then alphanumerics/'_'/'-', "
+            f"max 64 chars)"
+        )
+
+    repo = _require_str(raw, "repo", context=ctx)
+    if not _REMOTE_SOURCE_RE.match(repo):
+        raise MarketplaceYmlError(f"'{ctx}.repo' must match '<owner>/<repo>' shape, got '{repo}'")
+
+    path = raw.get("path")
+    if path is None:
+        path = ".claude-plugin/marketplace.json"
+    if not isinstance(path, str) or not path.strip():
+        raise MarketplaceYmlError(f"'{ctx}.path' must be a non-empty string")
+    path = path.strip()
+    try:
+        validate_path_segments(path, context=f"{ctx}.path")
+    except PathTraversalError as exc:
+        raise MarketplaceYmlError(str(exc)) from exc
+
+    ref: str | None = raw.get("ref")
+    if ref is not None:
+        ref = str(ref).strip()
+        if not ref:
+            raise MarketplaceYmlError(f"'{ctx}.ref' must be a non-empty string")
+
+    branch = raw.get("branch")
+    if branch is None:
+        branch = "main"
+    if not isinstance(branch, str) or not branch.strip():
+        raise MarketplaceYmlError(f"'{ctx}.branch' must be a non-empty string")
+    branch = branch.strip()
+
+    host = raw.get("host")
+    if host is None:
+        host = "github.com"
+    if not isinstance(host, str) or not host.strip():
+        raise MarketplaceYmlError(f"'{ctx}.host' must be a non-empty string")
+    host = host.strip()
+    if not _UPSTREAM_HOST_RE.match(host):
+        raise MarketplaceYmlError(f"'{ctx}.host' '{host}' is not a valid hostname")
+
+    allow_head = raw.get("allow_head", False)
+    if not isinstance(allow_head, bool):
+        raise MarketplaceYmlError(f"'{ctx}.allow_head' must be a boolean")
+
+    # Reproducibility guard: a missing ref is only acceptable if the
+    # author explicitly opts in via ``allow_head: true``. The builder
+    # additionally emits a ``BuildDiagnostic(level="warn")`` whenever
+    # an upstream is resolved against branch HEAD; governance can
+    # forbid it via the ``marketplace.upstream.allow_unpinned_refs``
+    # policy key.
+    if ref is None and not allow_head:
+        raise MarketplaceYmlError(
+            f"'{ctx}': 'ref' is required for reproducible builds. "
+            f"Set ref to a commit SHA or tag, or set "
+            f"'allow_head: true' to opt in to tracking branch HEAD "
+            f"(builds will warn)."
+        )
+
+    return Upstream(
+        alias=alias,
+        repo=repo,
+        path=path,
+        ref=ref,
+        branch=branch,
+        host=host,
+        allow_head=allow_head,
     )
 
 
@@ -768,6 +1199,29 @@ def _build_config(
     # -- build --
     build = _parse_build(marketplace_dict.get("build"))
 
+    # -- upstreams (optional) -- parse FIRST so packages cross-validation
+    # can verify each upstream-sourced entry references a declared alias.
+    raw_upstreams = marketplace_dict.get("upstreams")
+    if raw_upstreams is None:
+        raw_upstreams = []
+    if not isinstance(raw_upstreams, list):
+        raise MarketplaceYmlError("'upstreams' must be a list")
+
+    upstream_entries: list[Upstream] = []
+    seen_aliases: dict[str, int] = {}
+    for u_idx, raw_upstream in enumerate(raw_upstreams):
+        upstream = _parse_upstream_registration(raw_upstream, u_idx)
+        if upstream.alias in seen_aliases:
+            raise MarketplaceYmlError(
+                f"Duplicate upstream alias '{upstream.alias}' "
+                f"(upstreams[{seen_aliases[upstream.alias]}] and "
+                f"upstreams[{u_idx}])"
+            )
+        seen_aliases[upstream.alias] = u_idx
+        upstream_entries.append(upstream)
+
+    declared_aliases = {u.alias for u in upstream_entries}
+
     # -- packages --
     raw_packages = marketplace_dict.get("packages")
     if raw_packages is None:
@@ -775,10 +1229,13 @@ def _build_config(
     if not isinstance(raw_packages, list):
         raise MarketplaceYmlError("'packages' must be a list")
 
-    entries: list[PackageEntry] = []
+    entries: list[MarketplacePackage] = []
     seen_names: dict[str, int] = {}
+    seen_upstream_pairs: dict[tuple[str, str], int] = {}
     for idx, raw_entry in enumerate(raw_packages):
         entry = _parse_package_entry(raw_entry, idx)
+        # Cross-shape `name` uniqueness (panel: prevents dependency-
+        # confusion / name shadowing across direct + upstream).
         lower_name = entry.name.lower()
         if lower_name in seen_names:
             raise MarketplaceYmlError(
@@ -786,6 +1243,30 @@ def _build_config(
                 f"(packages[{seen_names[lower_name]}] and packages[{idx}])"
             )
         seen_names[lower_name] = idx
+
+        if isinstance(entry, UpstreamPackageEntry):
+            # Cross-validate against declared upstreams.
+            if entry.upstream_alias not in declared_aliases:
+                known = ", ".join(sorted(declared_aliases)) or "(none declared)"
+                raise MarketplaceYmlError(
+                    f"packages[{idx}] ('{entry.name}'): "
+                    f"upstream '{entry.upstream_alias}' is not declared "
+                    f"in marketplace.upstreams (known aliases: {known})"
+                )
+            # Reject duplicate (upstream_alias, plugin) pairs -- the
+            # same upstream plugin cannot be exposed twice under
+            # different display names without explicit operator intent.
+            plugin_key = entry.plugin or entry.name
+            pair = (entry.upstream_alias, plugin_key)
+            if pair in seen_upstream_pairs:
+                prev = seen_upstream_pairs[pair]
+                raise MarketplaceYmlError(
+                    f"Duplicate upstream package "
+                    f"({entry.upstream_alias}/{plugin_key}) "
+                    f"(packages[{prev}] and packages[{idx}])"
+                )
+            seen_upstream_pairs[pair] = idx
+
         entries.append(entry)
 
     return MarketplaceConfig(
@@ -797,6 +1278,7 @@ def _build_config(
         metadata=metadata,
         build=build,
         packages=tuple(entries),
+        upstreams=tuple(upstream_entries),
         source_path=source_path,
         is_legacy=is_legacy,
         name_overridden=name_overridden,
