@@ -1,37 +1,42 @@
 {
-  "last_updated": "2026-05-09T06:34:51Z",
-  "last_run_tasks": ["task4", "task5", "task7"],
+  "last_updated": "2026-05-10T06:44:48Z",
+  "last_run_tasks": ["task3", "task7"],
   "validated_commands": {
-    "test": ".venv/bin/pytest tests/unit/ -q --ignore=tests/unit/test_audit_report.py --ignore=tests/unit/test_deps_update_command.py --ignore=tests/unit/test_plugin_exporter_schema.py",
+    "test": ".venv/bin/pytest tests/unit/ -q",
     "format": ".venv/bin/ruff check src/ tests/ --fix && .venv/bin/ruff format src/ tests/",
     "lint_check": ".venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/",
     "install_dev": "pip install uv && python -m uv sync --extra dev --python /usr/bin/python3.12",
-    "notes": "Use pip install uv (not curl install). Use python -m uv with --python /usr/bin/python3.12 to avoid PyPy. Baseline 2026-05-08: ~93 failed (7 policy_status ANSI + 2 runtime_factory LLM + 8+ test_skill_bundle YAML parser + 1 test_uninstall_reintegration + 2 workflow tests), 7658 passed."
+    "notes": "Use pip install uv (not curl install). Use python -m uv with --python /usr/bin/python3.12 to avoid PyPy. Baseline 2026-05-10: 11 failed (7 policy_status ANSI + 4 runtime_factory LLM), 7978 passed. All 3 previously-ignored files (test_audit_report, test_deps_update_command, test_plugin_exporter_schema) now pass - removed ignores from test command."
   },
   "coverage_baseline": {
-    "total": "7658 passing, 93 failing",
-    "run_date": "2026-05-08",
-    "notes": "New failures since 05-06: test_skill_bundle.py (8 tests) - YAML parser error 'could not determine constructor for tag None'. test_uninstall_reintegration.py (1). workflow/test_workflow.py (2). These appear to be new regressions in main not caused by TI. compile/cli.py: 51% (183 missing lines)."
+    "total": "7978 passing, 11 failing",
+    "run_date": "2026-05-10",
+    "notes": "11 pre-existing failures: 7 policy_status ANSI + 4 runtime_factory LLM (no llm package installed). Previously-ignored files now all pass. test_skill_bundle.py YAML failures from 2026-05-08 are now resolved."
   },
   "monthly_activity_issue": {"number": 1101, "month": "2026-05"},
   "ansi_note": "Rich outputs ANSI codes (italic, bold) even with NO_COLOR=1. Use regex to strip before text assertions.",
   "lockfile_format_note": "Lockfile is apm.lock.yaml (LOCKFILE_NAME constant).",
   "maintainer_preferences": "PRs #1029 (ANSI fix) and #1059 (uninstall engine tests) were closed without merging on 2026-05-03. Be more selective about submitting PRs.",
   "testing_backlog": [
-    {"id": "skill-bundle-yaml-regressions", "priority": "high", "notes": "8+ new failures in test_skill_bundle.py as of 2026-05-08: YAML 'could not determine constructor for tag None'. Likely a regression in main worth flagging to maintainers."},
-    {"id": "install-command", "file": "src/apm_cli/commands/install.py", "coverage": "81%", "priority": "medium", "notes": "Large complex file. Core install logic. skip_download logic mocked tests (#552) a good entry point. Deferred."},
+    {"id": "install-command", "file": "src/apm_cli/commands/install.py", "coverage": "81%", "priority": "medium", "notes": "Large complex file. Core install logic. skip_download logic mocked tests (#552) a good entry point."},
+    {"id": "compile-cli-full", "file": "src/apm_cli/commands/compile/cli.py", "priority": "medium", "notes": "compile() helper functions covered (PR #1206). Early-exit paths covered (2026-05-10). Full compilation flow (after line 461) still largely untested - complex, requires filesystem and compiler setup."},
+    {"id": "deps-cli-update", "file": "src/apm_cli/commands/deps/cli.py", "priority": "medium", "notes": "18 tests exist in test_deps_update_command.py (previously ignored, now passing). Check what's still uncovered."},
     {"id": "integration-test-markers", "priority": "medium", "notes": "8 network-gated integration test files need pytestmark annotations before pytest-discovery swap (#1168 gate 1). Offered to help in comment. Await maintainer confirmation."},
-    {"id": "compile-cli-full", "file": "src/apm_cli/commands/compile/cli.py", "coverage": "~55%", "priority": "medium", "notes": "PR created 2026-05-08 for helper functions. compile() main command (lines 325+) still largely untested."},
-    {"id": "deps-cli-update", "file": "src/apm_cli/commands/deps/cli.py", "coverage": "61%", "priority": "medium", "notes": "Helpers covered (PR #1155). update() orchestration lines 746-898 still sparse."},
     {"id": "compile-watcher", "file": "src/apm_cli/commands/compile/watcher.py", "coverage": "5%", "priority": "low", "notes": "File-watching component. Hard to test."},
     {"id": "policy-status-ascii", "priority": "low", "notes": "7 tests failing: policy_status uses Rich unicode but test expects ASCII. PR #1029 closed by maintainer - do not retry."}
   ],
-  "backlog_cursor": "integration-test-markers",
+  "backlog_cursor": "compile-cli-full",
   "completed_work": [
+    {
+      "run": "2026-05-10T06:44:48Z",
+      "tasks": ["task3", "task7"],
+      "pr_branch": "test-assist/compile-command-early-exit-tests",
+      "description": "Task3: 13 new tests for compile() command early-exit paths (no apm.yml, --all+--target conflict, --target all deprecation, empty .apm dir, --dry-run bypass, --validate mode). Discovered: 3 previously-ignored test files now pass, test_skill_bundle YAML failures resolved. Task7: Updated monthly issue #1101."
+    },
     {
       "run": "2026-05-09T06:34:51Z",
       "tasks": ["task4", "task5", "task7"],
-      "description": "Task4: PRs #1139, #1206 fully CI-green, no action. Task5: Commented on #1168 (offered to add pytestmark markers to 8 network-gated integration files), commented on #552 (offered Option B mocked integration tests for skip_download). Task7: Updated monthly issue #1101."
+      "description": "Task4: PRs #1139, #1206 fully CI-green, no action. Task5: Commented on #1168 and #552. Task7: Updated monthly issue #1101."
     },
     {
       "run": "2026-05-08T06:26:06Z",
@@ -44,12 +49,6 @@
       "tasks": ["task4", "task2", "task3", "task7"],
       "pr_branch": "test-assist/deps-cli-helper-tests",
       "description": "Task4: PR #1139 CI-green. Task2: coverage analysis. Task3: 15 new tests for deps/cli.py helpers. Task7: Updated monthly issue #1101."
-    },
-    {
-      "run": "2026-05-05T03:36:08Z",
-      "tasks": ["task3", "task7"],
-      "pr_branch": "test-assist/fix-runtime-factory-skip-tests",
-      "description": "Task3: Fixed 4 CI failures in test_runtime_factory.py. Task7: Updated monthly issue #1101."
     }
   ]
 }
