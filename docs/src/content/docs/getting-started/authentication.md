@@ -184,14 +184,16 @@ export ADO_APM_PAT=your_ado_pat
 apm install dev.azure.com/myorg/myproject/myrepo
 ```
 
-ADO is always auth-required. Uses 3-segment paths (`org/project/repo`). No `ADO_HOST` equivalent - always use FQDN syntax:
+ADO is always auth-required. Uses 3-segment paths (`org/project/repo`). No `ADO_HOST` equivalent - always use FQDN syntax. Both the shorthand (`dev.azure.com/...`) and full HTTPS URL (`https://dev.azure.com/...`) forms are accepted:
 
 ```bash
 apm install dev.azure.com/myorg/myproject/myrepo#main
+apm install https://dev.azure.com/myorg/myproject/_git/myrepo  # full URL also accepted
 apm install mycompany.visualstudio.com/org/project/repo  # legacy URL
 
 # Sub-path inside an ADO repo, pinned to a tag (use the _git form for sub-paths):
 apm install dev.azure.com/myorg/myproject/_git/myrepo/instructions/security#v2.0
+apm install https://dev.azure.com/myorg/myproject/_git/myrepo/instructions/security#v2.0
 ```
 
 If your ADO project or repository name contains spaces, URL-encode them as `%20`:

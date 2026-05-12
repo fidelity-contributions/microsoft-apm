@@ -293,6 +293,8 @@ manifest:
 
 Detect files in governance directories that are not tracked by APM.
 
+A file is "tracked by APM" only if it was produced by an installed plugin. Pre-existing files that APM did not deploy are counted as unmanaged even if they reside in a governed directory.
+
 ### `action`
 
 | Value | Behavior |
@@ -422,7 +424,7 @@ A child policy can only tighten constraints — never relax them:
 | `max_depth` | `min(parent, child)` |
 | `mcp.self_defined` | Escalates: `allow` < `warn` < `deny` |
 | `manifest.scripts` | Escalates: `allow` < `deny` |
-| `unmanaged_files.action` | Escalates: `ignore` < `warn` < `deny` |
+| `unmanaged_files.action` | Escalates: `ignore` < `warn` < `deny`. Omitting `unmanaged_files` in the child is treated as "no opinion" -- the parent value is preserved unchanged. |
 | `source_attribution` | `parent OR child` — either enables it |
 | `trust_transitive` | `parent AND child` — both must allow it |
 

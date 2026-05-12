@@ -80,7 +80,7 @@ writes a runtime-specific MCP config file. The schemas differ; the
 | GitHub Copilot CLI | `~/.copilot/mcp-config.json` | global | JSON `mcpServers` |
 | VS Code (Copilot) | `.vscode/mcp.json` | project | JSON `servers` |
 | Claude Code | `.mcp.json` (project) or `~/.claude.json` (`-g`) | both | JSON `mcpServers` |
-| Cursor | `.cursor/mcp.json` | project (only if `.cursor/` exists) | JSON `mcpServers` |
+| Cursor | `.cursor/mcp.json` | project (only if `.cursor/` exists) | JSON `mcpServers` (Cursor-native schema: `type: stdio` / `type: http`) |
 | Codex CLI | `~/.codex/config.toml` | global | TOML `[mcp_servers.*]` |
 | Gemini CLI | `.gemini/settings.json` | project (only if `.gemini/` exists) | JSON `mcpServers` |
 | OpenCode | `opencode.json` | project (only if `.opencode/` exists) | JSON `mcp` |
