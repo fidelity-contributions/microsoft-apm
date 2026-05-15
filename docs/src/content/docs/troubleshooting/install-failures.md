@@ -166,7 +166,24 @@ apm audit --check drift
 
 A non-zero exit means the working tree has diverged from `apm.lock.yaml` -- either re-run `apm install` to restore parity, or commit the new lockfile if the drift was intentional.
 
-For the full flag list see [`apm install`](../reference/cli/install/).
+### Policy blocked after lockfile wipe
+
+If `apm install` fails with `Policy violation: required-packages-deployed` right after a lockfile wipe, hand-edit, or partial-install crash, the lockfile has an empty `deployed_files` list for a required package even though the files are on disk.
+
+Re-run `apm install` -- APM now auto-adopts byte-identical existing files and repopulates `deployed_files`, which lets the policy gate pass:
+
+```bash
+apm install
+```
+
+On APM versions older than v0.14, use `--no-policy` once to break the loop:
+
+```bash
+apm install --no-policy   # one-time: repopulates deployed_files
+apm install               # policy now passes
+```
+
+For full diagnosis of policy failures, see [Debugging policy failures](./policy-debugging/).
 
 ## 4. Cache problems
 

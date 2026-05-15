@@ -87,6 +87,9 @@ Common surprises:
 - A child sets `mcp.transport.allow: [stdio, http]` but the parent
   pinned `[http]` -- the child's broader list is ignored.
 - Severity can only be raised by a child, never lowered.
+- `dependencies.require` and `dependencies.deny` from an org floor are
+  correctly inherited when a repo policy uses `extends: org`. An absent
+  repo-level block no longer silently drops the org requirement.
 
 The full merge semantics live in
 [Policy schema -> Merge rules (tighten-only)](../reference/policy-schema/#merge-rules-tighten-only).
@@ -170,6 +173,23 @@ shortest path to green.
 - **Fix:** Edit `apm.yml` and add the listed field. Org policy
   defines the required set; check
   [Policy schema](../reference/policy-schema/).
+
+### `required-packages-deployed`
+
+- **Symptom:** `Policy violation: required-packages-deployed -- 1 required package(s) not deployed: <org>/<repo>/...` even though the package files appear to be on disk.
+- **Cause:** The lockfile (`apm.lock.yaml`) has an empty `deployed_files` list for the required package. This can happen after a lockfile wipe, a hand-edit, a partial-install crash, or an older APM build that did not record the entry. The policy gate runs before `apm install` deploys files, so it fires on the stale (empty) lockfile state.
+- **Fix (v0.14+):** Re-run `apm install`. APM now auto-adopts byte-identical existing files, which repopulates `deployed_files` without overwriting your content. The next `apm install` will then pass the policy gate.
+
+  ```bash
+  apm install          # repopulates deployed_files; policy passes on this run
+  ```
+
+- **Fix (older versions):** Use `--no-policy` once to break the loop, then run normally:
+
+  ```bash
+  apm install --no-policy   # one-time: repopulates deployed_files
+  apm install               # policy now passes
+  ```
 
 ### `unmanaged_files.action: deny`
 
