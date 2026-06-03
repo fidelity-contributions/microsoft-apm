@@ -2019,6 +2019,7 @@ def _install_apm_dependencies(  # noqa: PLR0913
     frozen: bool = False,
     plan_callback=None,
     refresh: bool = False,
+    lockfile_only: bool = False,
 ):
     """Thin wrapper -- builds an :class:`InstallRequest` and delegates to
     :class:`apm_cli.install.service.InstallService`.
@@ -2058,5 +2059,6 @@ def _install_apm_dependencies(  # noqa: PLR0913
         frozen=frozen,
         plan_callback=plan_callback,
         refresh=refresh,
+        lockfile_only=lockfile_only,
     )
     return InstallService().run(request)
