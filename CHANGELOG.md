@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment for Claude Code and Codex instead of being written verbatim.
   (#1966)
 
+- Self-hosted git hosts such as GitBucket that serve smart-HTTP only at the
+  `.git` path now install successfully over anonymous HTTPS; `apm install` no
+  longer drops the suffix. (#1995)
+
 ## [0.23.1] - 2026-06-29
 
 ### Fixed
