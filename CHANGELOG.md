@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In-repository plugins from SSH-registered GitLab and generic git
+  marketplaces no longer rewrite to HTTPS; generated `git:` and `path:`
+  dependencies keep using existing SSH keys. (#2091)
 - Installing the same GitHub or package-registry dependency with different
   owner/repository casing no longer creates duplicate identities, lock/cache
   keys, or install paths. Publish uses the same lowercase identity, while
