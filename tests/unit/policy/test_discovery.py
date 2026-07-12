@@ -654,7 +654,7 @@ class TestDiscoverPolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = discover_policy(Path(tmpdir), no_cache=True)
             self.assertTrue(result.found)
-            self.assertEqual(result.source, "org:contoso/.github")
+            self.assertEqual(result.source, "org:contoso/.github-private")
 
     @patch("apm_cli.policy.discovery.subprocess.run")
     def test_no_git_remote(self, mock_run):
@@ -672,16 +672,19 @@ class TestDiscoverPolicy(unittest.TestCase):
             returncode=0,
             stdout="https://github.com/contoso/my-project.git\n",
         )
+        # .github-private will 404, falling through to .github which has a cache hit
+        mock_fetch.return_value = (None, "404: Policy file not found")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            # Pre-populate cache
+            # Pre-populate cache for .github
             _write_cache("contoso/.github", _make_test_policy(), root)
 
             result = discover_policy(root, no_cache=False)
             self.assertTrue(result.found)
             self.assertTrue(result.cached)
-            mock_fetch.assert_not_called()
+            # .github-private is fetched (no cache), .github is served from cache
+            self.assertEqual(mock_fetch.call_count, 1)
 
     @patch("apm_cli.policy.discovery._fetch_github_contents")
     @patch("apm_cli.policy.discovery.subprocess.run")
@@ -695,7 +698,7 @@ class TestDiscoverPolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = discover_policy(Path(tmpdir), no_cache=True)
             self.assertTrue(result.found)
-            self.assertEqual(result.source, "org:ghe.example.com/contoso/.github")
+            self.assertEqual(result.source, "org:ghe.example.com/contoso/.github-private")
 
 
 class TestAutoDiscover(unittest.TestCase):
@@ -704,25 +707,26 @@ class TestAutoDiscover(unittest.TestCase):
     @patch("apm_cli.policy.discovery._fetch_from_repo")
     @patch("apm_cli.policy.discovery._extract_org_from_git_remote")
     def test_github_com_first_candidate_found(self, mock_extract, mock_fetch):
-        """When .github has a policy, it wins immediately."""
+        """When .github-private has a policy, it wins immediately."""
         mock_extract.return_value = ("contoso", "github.com")
         mock_fetch.return_value = PolicyFetchResult(
-            policy=ApmPolicy(), source="org:contoso/.github", outcome="found"
+            policy=ApmPolicy(), source="org:contoso/.github-private", outcome="found"
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _auto_discover(Path(tmpdir), no_cache=True)
-            # First call should be for .github
+            # First call should be for .github-private
             first_call = mock_fetch.call_args_list[0]
-            self.assertEqual(first_call[0][0], "contoso/.github")
+            self.assertEqual(first_call[0][0], "contoso/.github-private")
             self.assertTrue(result.found)
 
     @patch("apm_cli.policy.discovery._fetch_from_repo")
     @patch("apm_cli.policy.discovery._extract_org_from_git_remote")
     def test_github_com_cascades_to_dot_apm(self, mock_extract, mock_fetch):
-        """.github absent -> falls back to .apm."""
+        """.github-private and .github absent -> falls back to .apm."""
         mock_extract.return_value = ("contoso", "github.com")
         mock_fetch.side_effect = [
+            PolicyFetchResult(outcome="absent"),  # .github-private 404
             PolicyFetchResult(outcome="absent"),  # .github 404
             PolicyFetchResult(
                 policy=ApmPolicy(), source="org:contoso/.apm", outcome="found"
@@ -731,9 +735,10 @@ class TestAutoDiscover(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _auto_discover(Path(tmpdir), no_cache=True)
-            self.assertEqual(mock_fetch.call_count, 2)
-            self.assertEqual(mock_fetch.call_args_list[0][0][0], "contoso/.github")
-            self.assertEqual(mock_fetch.call_args_list[1][0][0], "contoso/.apm")
+            self.assertEqual(mock_fetch.call_count, 3)
+            self.assertEqual(mock_fetch.call_args_list[0][0][0], "contoso/.github-private")
+            self.assertEqual(mock_fetch.call_args_list[1][0][0], "contoso/.github")
+            self.assertEqual(mock_fetch.call_args_list[2][0][0], "contoso/.apm")
             self.assertTrue(result.found)
 
     @patch("apm_cli.policy.discovery._fetch_from_repo")
@@ -742,6 +747,7 @@ class TestAutoDiscover(unittest.TestCase):
         """All dot-prefixed repos absent -> falls back to _apm."""
         mock_extract.return_value = ("contoso", "github.com")
         mock_fetch.side_effect = [
+            PolicyFetchResult(outcome="absent"),  # .github-private 404
             PolicyFetchResult(outcome="absent"),  # .github 404
             PolicyFetchResult(outcome="absent"),  # .apm 404
             PolicyFetchResult(
@@ -751,7 +757,7 @@ class TestAutoDiscover(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _auto_discover(Path(tmpdir), no_cache=True)
-            self.assertEqual(mock_fetch.call_count, 3)
+            self.assertEqual(mock_fetch.call_count, 4)
             self.assertTrue(result.found)
 
     @patch("apm_cli.policy.discovery._fetch_from_repo")
@@ -763,7 +769,7 @@ class TestAutoDiscover(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _auto_discover(Path(tmpdir), no_cache=True)
-            self.assertEqual(mock_fetch.call_count, 3)
+            self.assertEqual(mock_fetch.call_count, 4)
             self.assertEqual(result.outcome, "absent")
             self.assertFalse(result.found)
 
@@ -780,21 +786,76 @@ class TestAutoDiscover(unittest.TestCase):
             result = _auto_discover(Path(tmpdir), no_cache=True)
             # Only one call -- error stops the cascade
             self.assertEqual(mock_fetch.call_count, 1)
+            self.assertEqual(mock_fetch.call_args_list[0][0][0], "contoso/.github-private")
             self.assertFalse(result.found)
             self.assertIn("401", result.error)
+
+    @patch("apm_cli.policy.discovery._fetch_from_repo")
+    @patch("apm_cli.policy.discovery._extract_org_from_git_remote")
+    def test_403_is_error_not_absent(self, mock_extract, mock_fetch):
+        """HTTP 403 -> fail-closed (cache_miss_fetch_fail), not absent."""
+        mock_extract.return_value = ("contoso", "github.com")
+        mock_fetch.return_value = PolicyFetchResult(
+            error="403: Access denied to contoso/.github-private",
+            outcome="cache_miss_fetch_fail",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = _auto_discover(Path(tmpdir), no_cache=True)
+            self.assertEqual(mock_fetch.call_count, 1)
+            self.assertEqual(result.outcome, "cache_miss_fetch_fail")
+            self.assertNotEqual(result.outcome, "absent")
+            self.assertFalse(result.found)
+
+    @patch("apm_cli.policy.discovery._fetch_from_repo")
+    @patch("apm_cli.policy.discovery._extract_org_from_git_remote")
+    def test_github_private_auth_error_does_not_fall_through(self, mock_extract, mock_fetch):
+        """.github-private auth error -> fail-closed, .github NOT tried."""
+        mock_extract.return_value = ("contoso", "github.com")
+        mock_fetch.side_effect = [
+            PolicyFetchResult(error="403: Access denied", outcome="cache_miss_fetch_fail"),
+            PolicyFetchResult(policy=ApmPolicy(), outcome="found"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = _auto_discover(Path(tmpdir), no_cache=True)
+            # Only .github-private tried -- error stops cascade
+            self.assertEqual(mock_fetch.call_count, 1)
+            self.assertFalse(result.found)
+
+    @patch("apm_cli.policy.discovery._fetch_from_repo")
+    @patch("apm_cli.policy.discovery._extract_org_from_git_remote")
+    def test_github_private_absent_falls_back_to_github(self, mock_extract, mock_fetch):
+        """.github-private absent (404) -> cascade to .github."""
+        mock_extract.return_value = ("contoso", "github.com")
+        mock_fetch.side_effect = [
+            PolicyFetchResult(outcome="absent"),  # .github-private 404
+            PolicyFetchResult(
+                policy=ApmPolicy(), source="org:contoso/.github", outcome="found"
+            ),  # .github found
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = _auto_discover(Path(tmpdir), no_cache=True)
+            self.assertEqual(mock_fetch.call_count, 2)
+            self.assertEqual(mock_fetch.call_args_list[0][0][0], "contoso/.github-private")
+            self.assertEqual(mock_fetch.call_args_list[1][0][0], "contoso/.github")
+            self.assertTrue(result.found)
 
     @patch("apm_cli.policy.discovery._fetch_from_repo")
     @patch("apm_cli.policy.discovery._extract_org_from_git_remote")
     def test_ghe_repo_ref_includes_host(self, mock_extract, mock_fetch):
         mock_extract.return_value = ("contoso", "ghe.example.com")
         mock_fetch.return_value = PolicyFetchResult(
-            policy=ApmPolicy(), source="org:ghe.example.com/contoso/.github", outcome="found"
+            policy=ApmPolicy(),
+            source="org:ghe.example.com/contoso/.github-private",
+            outcome="found",
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             _auto_discover(Path(tmpdir), no_cache=True)
             first_call = mock_fetch.call_args_list[0]
-            self.assertEqual(first_call[0][0], "ghe.example.com/contoso/.github")
+            self.assertEqual(first_call[0][0], "ghe.example.com/contoso/.github-private")
 
     @patch("apm_cli.policy.discovery._extract_org_from_git_remote")
     def test_no_remote_returns_error(self, mock_extract):
@@ -840,11 +901,11 @@ class TestPolicyRepoCandidates(unittest.TestCase):
 
     def test_github_com_returns_all_candidates(self):
         result = _policy_repo_candidates("github.com")
-        self.assertEqual(result, (".github", ".apm", "_apm"))
+        self.assertEqual(result, (".github-private", ".github", ".apm", "_apm"))
 
     def test_ghe_returns_all_candidates(self):
         result = _policy_repo_candidates("ghe.example.com")
-        self.assertEqual(result, (".github", ".apm", "_apm"))
+        self.assertEqual(result, (".github-private", ".github", ".apm", "_apm"))
 
     def test_ado_dev_azure_com(self):
         result = _policy_repo_candidates("dev.azure.com")
@@ -860,7 +921,7 @@ class TestPolicyRepoCandidates(unittest.TestCase):
 
     def test_unknown_host_returns_all(self):
         result = _policy_repo_candidates("gitlab.example.com")
-        self.assertEqual(result, (".github", ".apm", "_apm"))
+        self.assertEqual(result, (".github-private", ".github", ".apm", "_apm"))
 
 
 class TestFetchAdoContents(unittest.TestCase):
