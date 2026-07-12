@@ -2,6 +2,7 @@
 
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import click
@@ -10,6 +11,7 @@ import click
 from ...constants import APM_MODULES_DIR, APM_YML_FILENAME, SKILL_MD_FILENAME
 from ...core.command_logger import CommandLogger
 from ...core.target_detection import TargetParamType
+from ...deps.lockfile import LockedDependency
 from ...models.apm_package import APMPackage
 from .._helpers import (
     UnknownPackageError,
@@ -70,42 +72,71 @@ def _dep_display_name(dep) -> str:
     return f"{key}@{version}"
 
 
-def _add_tree_children(parent_branch, parent_key, children_map, has_rich, depth=0):
-    """Recursively add transitive deps as nested children of a tree node."""
-    kids = children_map.get(parent_key, [])
-    for child_dep in kids:
-        child_name = _dep_display_name(child_dep)
-        child_branch = parent_branch.add(f"[dim]{child_name}[/dim]") if has_rich else child_name
-        if depth < 5:  # Prevent infinite recursion
-            _add_tree_children(
-                child_branch,
-                child_dep.get_unique_key(),
-                children_map,
-                has_rich,
-                depth + 1,
+def _walk_tree_children(
+    parent_key: str,
+    children_map: dict[str, list[LockedDependency]],
+) -> Iterator[tuple[LockedDependency, tuple[int, ...], tuple[bool, ...], bool]]:
+    """Yield dependency-tree descendants depth-first without Python recursion."""
+    ancestors = frozenset({parent_key})
+    children = children_map.get(parent_key, [])
+    stack: list[tuple[LockedDependency, tuple[int, ...], tuple[bool, ...], frozenset[str]]] = []
+    for index in range(len(children) - 1, -1, -1):
+        stack.append(
+            (
+                children[index],
+                (index,),
+                (index == len(children) - 1,),
+                ancestors,
             )
+        )
+
+    while stack:
+        child_dep, path, last_flags, parent_ancestors = stack.pop()
+        child_key = child_dep.get_unique_key()
+        is_circular = child_key in parent_ancestors
+        yield child_dep, path, last_flags, is_circular
+        if is_circular:
+            continue
+
+        child_ancestors = parent_ancestors | {child_key}
+        grandchildren = children_map.get(child_key, [])
+        for index in range(len(grandchildren) - 1, -1, -1):
+            stack.append(
+                (
+                    grandchildren[index],
+                    (*path, index),
+                    (*last_flags, index == len(grandchildren) - 1),
+                    child_ancestors,
+                )
+            )
+
+
+def _add_tree_children(
+    parent_branch,
+    parent_key: str,
+    children_map: dict[str, list[LockedDependency]],
+) -> None:
+    """Add every transitive dependency to a Rich tree without a depth limit."""
+    branches = {(): parent_branch}
+    for child_dep, path, _, is_circular in _walk_tree_children(parent_key, children_map):
+        child_name = _dep_display_name(child_dep)
+        suffix = " (circular)" if is_circular else ""
+        child_branch = branches[path[:-1]].add(f"[dim]{child_name}{suffix}[/dim]")
+        if not is_circular:
+            branches[path] = child_branch
 
 
 def _echo_tree_children(
     parent_key: str,
-    children_map: dict[str, list],
+    children_map: dict[str, list[LockedDependency]],
     prefix: str = "",
-    depth: int = 0,
 ) -> None:
-    """Render transitive dependencies recursively without Rich."""
-    kids = children_map.get(parent_key, [])
-    for index, child_dep in enumerate(kids):
-        is_last = index == len(kids) - 1
-        child_prefix = "+-- " if is_last else "|-- "
-        click.echo(f"{prefix}{child_prefix}{_dep_display_name(child_dep)}")
-        if depth < 5:
-            continuation = "    " if is_last else "|   "
-            _echo_tree_children(
-                child_dep.get_unique_key(),
-                children_map,
-                prefix + continuation,
-                depth + 1,
-            )
+    """Render every transitive dependency without Rich or a depth limit."""
+    for child_dep, _, last_flags, is_circular in _walk_tree_children(parent_key, children_map):
+        indentation = "".join("    " if is_last else "|   " for is_last in last_flags[:-1])
+        child_prefix = "+-- " if last_flags[-1] else "|-- "
+        suffix = " (circular)" if is_circular else ""
+        click.echo(f"{prefix}{indentation}{child_prefix}{_dep_display_name(child_dep)}{suffix}")
 
 
 # ---------------------------------------------------------------------------
@@ -221,13 +252,8 @@ def _resolve_scope_deps(apm_dir, logger, insecure_only=False):
         if ".apm" in rel_parts:
             continue
 
-        # Skip skill sub-dirs nested inside another package (e.g. plugin
-        # skills/ directories that are deployment artifacts, not packages).
-        if (
-            has_skill_md
-            and not has_apm_yml
-            and _is_nested_under_package(candidate, apm_modules_path)
-        ):
+        # Nested manifests are deployment artifacts owned by the parent package.
+        if _is_nested_under_package(candidate, apm_modules_path):
             continue
         scanned_candidates.append((candidate, "/".join(rel_parts), has_apm_yml, has_skill_md))
 
@@ -368,7 +394,10 @@ def _show_scope_deps(scope_label, apm_dir, logger, console, has_rich, insecure_o
         # (no raw `[!]` literal that Rich would parse as markup) and so
         # behaviour is consistent with prune.py.
         if orphaned_packages:
-            logger.warning(f"{len(orphaned_packages)} orphaned package(s) found (not in apm.yml):")
+            logger.warning(
+                f"{len(orphaned_packages)} orphaned package(s) found "
+                "(not in resolved dependency graph):"
+            )
             for pkg in orphaned_packages:
                 logger.warning(f"  - {pkg}")
             logger.info("Run 'apm prune' to remove orphaned packages")
@@ -412,13 +441,16 @@ def _show_scope_deps(scope_label, apm_dir, logger, console, has_rich, insecure_o
         # Show orphaned packages warning -- route through CommandLogger
         # for consistency with the rich branch above and with prune.py.
         if orphaned_packages:
-            logger.warning(f"{len(orphaned_packages)} orphaned package(s) found (not in apm.yml):")
+            logger.warning(
+                f"{len(orphaned_packages)} orphaned package(s) found "
+                "(not in resolved dependency graph):"
+            )
             for pkg in orphaned_packages:
                 logger.warning(f"  - {pkg}")
             logger.info("Run 'apm prune' to remove orphaned packages")
 
 
-@deps.command(name="list", help="List installed APM dependencies")
+@deps.command(name="list", help="List installed APM dependencies and their primitives")
 @click.option(
     "--global",
     "-g",
@@ -561,10 +593,10 @@ def _build_dep_tree(apm_dir):
                     result["source"] = "lockfile"
                     result["direct"] = [d for d in lockfile_deps if d.depth <= 1]
                     transitive = [d for d in lockfile_deps if d.depth > 1]
-                    children_map: dict[str, list] = {}
+                    children_map: dict[str, list[LockedDependency]] = {}
                     unresolved = []
-                    parents_by_unique_key: dict[tuple[int, str], list] = {}
-                    parents_by_repo_url: dict[tuple[int, str], list] = {}
+                    parents_by_unique_key: dict[tuple[int, str], list[LockedDependency]] = {}
+                    parents_by_repo_url: dict[tuple[int, str], list[LockedDependency]] = {}
                     for candidate in lockfile_deps:
                         parents_by_unique_key.setdefault(
                             (candidate.depth, candidate.get_unique_key()), []
@@ -613,7 +645,7 @@ def _build_dep_tree(apm_dir):
             continue
         if ".apm" in rel_parts:
             continue
-        if has_skill and not has_apm and _is_nested_under_package(candidate, apm_modules_path):
+        if _is_nested_under_package(candidate, apm_modules_path):
             continue
         info = _get_package_display_info(candidate)
         primitives = _count_primitives(candidate)
@@ -627,7 +659,7 @@ def _build_dep_tree(apm_dir):
     return result
 
 
-@deps.command(help="Show dependency tree structure")
+@deps.command(help="Show the full dependency tree")
 @click.option(
     "--global",
     "-g",
@@ -680,13 +712,14 @@ def tree(global_):
                             prim_summary = _format_primitive_counts(_count_primitives(install_path))
                             if prim_summary:
                                 branch.add(f"[dim]{prim_summary}[/dim]")
-                        _add_tree_children(branch, dep.get_unique_key(), children_map, has_rich)
+                        _add_tree_children(branch, dep.get_unique_key(), children_map)
                     for dep in unresolved:
                         display = _dep_display_name(dep)
                         branch = root_tree.add(
-                            f"[yellow]{display} (could not determine parent)[/yellow]"
+                            f"[yellow]{display} (could not place in tree; "
+                            "run apm install to resolve)[/yellow]"
                         )
-                        _add_tree_children(branch, dep.get_unique_key(), children_map, has_rich)
+                        _add_tree_children(branch, dep.get_unique_key(), children_map)
                 console.print(root_tree)
             else:
                 click.echo(f"{project_name} (local)")
@@ -703,7 +736,11 @@ def tree(global_):
                     for i, dep in enumerate(unresolved):
                         is_last = i == len(unresolved) - 1
                         prefix = "+-- " if is_last else "|-- "
-                        click.echo(f"{prefix}{_dep_display_name(dep)} (could not determine parent)")
+                        click.echo(
+                            f"{prefix}{_dep_display_name(dep)} "
+                            "(could not place in tree; "
+                            "run apm install to resolve)"
+                        )
                         sub_prefix = "    " if is_last else "|   "
                         _echo_tree_children(dep.get_unique_key(), children_map, sub_prefix)
         # Fallback: scan apm_modules directory (no lockfile)
